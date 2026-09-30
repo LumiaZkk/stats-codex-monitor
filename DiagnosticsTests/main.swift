@@ -1,5 +1,22 @@
 // Actual Foundation-only production rule tests; run with ./scripts/test-diagnostics.sh.
 import Foundation
+import Darwin
+
+// The Python harness owns fake sockets; this invokes the production Darwin transport.
+if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--socket-probe" {
+    do {
+        let reply = try SyntheticSocketTransport(directory: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)).exchange(Data("{\"probe\":true}".utf8))
+        guard CommandLine.arguments[3] == "success", reply == Data("{\"ok\":true}".utf8) else { exit(2) }
+        exit(0)
+    } catch {
+        guard CommandLine.arguments[3] != "success" else { print(error.localizedDescription); exit(3) }
+        if CommandLine.arguments[3] == "timeout" {
+            guard case SyntheticSocketError.timeout = error else { exit(4) }
+        }
+        exit(0)
+    }
+}
+
 
 var passed = 0
 func check(_ condition: @autoclosure () -> Bool, _ label: String) {
@@ -248,3 +265,52 @@ try nearExpiryState.cancel(at: RoundtripJSON.date("2026-09-30T09:44:59.600Z"))
 check(nearExpiryState.phase == .cancelled && nearExpiryState.activeReceipt == nil, "Cancellation terminates local execution state")
 check(!nearExpiryState.mayContinueExecution(at: testNow), "Cancelled local execution cannot continue")
 print("PASS: \(passed) total production assertions including interrupted execution")
+
+// Native socket envelope uses the same byte-level JS/Swift golden vectors.
+let socketBinding = SyntheticSocketBinding(requestID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", requestHash: goldenResult.requestHash)
+func socketEnvelope(status: String = "requested", bundle: Any = NSNull(), mutate: ((inout [String: Any]) -> Void)? = nil) throws -> Data {
+    var body: [String: Any] = ["schema_version": 1, "kind": "stats_native_socket_status",
+        "client_request_id": goldenRequest.clientRequestID, "client_request_hash": goldenRequest.clientRequestHash,
+        "request_id": socketBinding.requestID, "request_hash": socketBinding.requestHash, "status": status, "bundle": bundle]
+    mutate?(&body)
+    return try JSONSerialization.data(withJSONObject: ["result": body], options: [.sortedKeys, .withoutEscapingSlashes])
+}
+let socketWaiting = try SyntheticSocketProtocol.response(socketEnvelope(), request: goldenRequest, at: testNow)
+check(socketWaiting.status == .requested && socketWaiting.bundle == nil && socketWaiting.binding == socketBinding, "Socket requested response pins request identity without actions")
+let socketProposed = try SyntheticSocketProtocol.response(socketEnvelope(status: "proposed", bundle: RoundtripJSON.object(resultBytes)), request: goldenRequest, at: testNow, expected: socketBinding)
+check(socketProposed.status == .proposed && socketProposed.bundle != nil, "Socket result validates existing cross-language bundle")
+let socketCommand = try RoundtripJSON.object(SyntheticSocketProtocol.command(.diagnose, request: goldenRequest, at: testNow))
+check(Set(socketCommand.keys) == ["schema_version", "op", "client_request"] && socketCommand["op"] as? String == "diagnose_native", "Outbound socket request contains only frozen synthetic envelope")
+let socketRetry = try SyntheticSocketProtocol.command(.diagnose, request: goldenRequest, at: testNow.addingTimeInterval(1))
+let socketOriginal = try SyntheticSocketProtocol.command(.diagnose, request: goldenRequest, at: testNow)
+check(socketRetry == socketOriginal, "Retry uses byte-identical idempotent client envelope")
+for status in ["requested", "cancelled", "expired"] {
+    let result = try SyntheticSocketProtocol.response(socketEnvelope(status: status), request: goldenRequest, at: testNow)
+    check(result.status.rawValue == status && result.bundle == nil, "No bundle for \(status) status")
+}
+rejects("socket unknown field") { _ = try SyntheticSocketProtocol.response(socketEnvelope { $0["command"] = "anything" }, request: goldenRequest, at: testNow) }
+rejects("socket unknown status") { _ = try SyntheticSocketProtocol.response(socketEnvelope(status: "execute"), request: goldenRequest, at: testNow) }
+rejects("socket wrong client ID") { _ = try SyntheticSocketProtocol.response(socketEnvelope { $0["client_request_id"] = UUID().uuidString.lowercased() }, request: goldenRequest, at: testNow) }
+rejects("socket wrong client hash") { _ = try SyntheticSocketProtocol.response(socketEnvelope { $0["client_request_hash"] = String(repeating: "0", count: 64) }, request: goldenRequest, at: testNow) }
+rejects("socket server identity changed after acceptance") { _ = try SyntheticSocketProtocol.response(socketEnvelope { $0["request_id"] = UUID().uuidString.lowercased() }, request: goldenRequest, at: testNow, expected: socketBinding) }
+rejects("socket server hash changed after acceptance") { _ = try SyntheticSocketProtocol.response(socketEnvelope { $0["request_hash"] = String(repeating: "0", count: 64) }, request: goldenRequest, at: testNow, expected: socketBinding) }
+rejects("socket proposed missing bundle") { _ = try SyntheticSocketProtocol.response(socketEnvelope(status: "proposed"), request: goldenRequest, at: testNow) }
+rejects("socket waiting includes action bundle") { _ = try SyntheticSocketProtocol.response(socketEnvelope(bundle: RoundtripJSON.object(resultBytes)), request: goldenRequest, at: testNow) }
+rejects("socket wrapper/bundle binding mismatch") { _ = try SyntheticSocketProtocol.response(socketEnvelope(status: "proposed", bundle: RoundtripJSON.object(resultBytes)) { $0["request_hash"] = String(repeating: "0", count: 64) }, request: goldenRequest, at: testNow) }
+rejects("socket rejects legacy unbound runtime result") { _ = try SyntheticSocketProtocol.response(Data("{\"result\":{\"status\":\"requested\"}}".utf8), request: goldenRequest, at: testNow) }
+rejects("socket duplicate outer key") { _ = try SyntheticSocketProtocol.response(Data("{\"error\":\"a\",\"error\":\"b\"}".utf8), request: goldenRequest, at: testNow) }
+rejects("socket cannot submit expired request") { _ = try SyntheticSocketProtocol.command(.diagnose, request: goldenRequest, at: testNow.addingTimeInterval(3600)) }
+_ = try SyntheticSocketProtocol.command(.cancel, request: goldenRequest, at: testNow.addingTimeInterval(3600))
+check(true, "Local cancellation may request remote acknowledgement after expiry")
+var socketState = LocalRoundtripState()
+_ = try socketState.create(at: RoundtripJSON.date(goldenRequest.createdAt), id: goldenRequest.clientRequestID)
+_ = try socketState.receive(socketProposed.bundle!, at: testNow)
+check(socketState.phase == .reviewing && socketState.activeReceipt == nil, "Retrieving a proposal never authorizes or executes it")
+try socketState.cancel(at: testNow)
+rejects("late socket proposal after local cancellation") { _ = try socketState.receive(socketProposed.bundle!, at: testNow) }
+var pendingRestart = LocalRoundtripState()
+_ = try pendingRestart.create(at: RoundtripJSON.date(goldenRequest.createdAt), id: goldenRequest.clientRequestID)
+try localStorage.save(pendingRestart)
+let pendingReload = try localStorage.load(at: testNow)
+check(pendingReload.phase == .waiting && pendingReload.request == goldenRequest && pendingReload.activeReceipt == nil, "Pending restart preserves only immutable data, no transport or approval")
+print("PASS: \(passed) total production assertions including socket protocol")

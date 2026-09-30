@@ -1,4 +1,4 @@
-// Synthetic file exchange + separately approved, allowlisted local test actions.
+// Explicit synthetic socket exchange + separately approved, allowlisted local tests.
 import Cocoa
 import Darwin
 
@@ -14,6 +14,16 @@ final class SyntheticRoundtripController: NSObject {
     private var observationTimer: Timer?
     private var openTimeout: DispatchWorkItem?
     private var storageFailure: String?
+    // Runtime selection and polling consent live only in this app session.
+    private var runtimeDirectory: URL?
+    private let socketQueue = DispatchQueue(label: "StatsDiagnostics.synthetic-ipc", qos: .utility)
+    private var pollingTimer: Timer?
+    private var exchangeGeneration = UUID()
+    private var exchangeInFlight = false
+    private var socketMessage = "Choose the foreground runtime's private folder, then send a synthetic test."
+    private var socketRequestID: String?
+    private var socketBinding: SyntheticSocketBinding?
+
 
     init(directory: URL, capture: @escaping Capture) {
         storage = LocalRoundtripStorage(directory: directory)
@@ -23,14 +33,137 @@ final class SyntheticRoundtripController: NSObject {
         catch { storageFailure = "Local roundtrip state could not be read safely. No local action is available." }
     }
     func appendMenu(to menu: NSMenu) {
-        let root = NSMenuItem(title: "Synthetic dot roundtrip", action: nil, keyEquivalent: "")
+        let root = NSMenuItem(title: "Synthetic diagnosis with dot", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
-        add("Create synthetic request…", #selector(createRequest), to: submenu)
-        add("Import returned proposal…", #selector(importProposal), to: submenu)
-        add("Review current request / proposal…", #selector(reviewCurrent), to: submenu)
-        add("Cancel pending request / local check", #selector(cancel), to: submenu)
+        add("Send synthetic diagnosis to dot", #selector(sendSynthetic), to: submenu)
+        add("Review status / proposal…", #selector(reviewCurrent), to: submenu)
+        add("Retry same pending request", #selector(retrySocketRequest), to: submenu)
+        add("Cancel request / local check", #selector(cancel), to: submenu)
         add("Last local receipt…", #selector(showReceipt), to: submenu)
+        submenu.addItem(.separator())
+        add("Choose temporary runtime folder…", #selector(chooseRuntime), to: submenu)
+        let files = NSMenuItem(title: "Manual file test tools", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu()
+        add("Create file-test request…", #selector(createRequest), to: fileMenu)
+        add("Save pending request…", #selector(saveRequest), to: fileMenu)
+        add("Import returned proposal…", #selector(importProposal), to: fileMenu)
+        files.submenu = fileMenu; submenu.addItem(files)
         root.submenu = submenu; menu.addItem(root)
+    }
+    @objc private func chooseRuntime() {
+        guard !exchangeInFlight, pollingTimer == nil, state.phase != .executing,
+              runtimeDirectory == nil || ![.waiting, .reviewing].contains(state.phase) else {
+            show(RoundtripError.invalid("Cancel the current request or local check before changing the runtime.")); return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Choose the foreground synthetic runtime's private run folder"
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try SyntheticSocketTransport(directory: url).validateEndpoint()
+            let alert = NSAlert()
+            alert.messageText = "Use this temporary synthetic runtime?"
+            alert.informativeText = "Each explicit Send click shares only the fixed SYNTHETIC fixture (CPU 92%, normal memory, disk 80 GiB) plus a random request ID, timestamps and hashes through your already-running private Tunnel to its subscribed dot. It does not describe this Mac. Dot analysis may use your model plan. No real readings or receipts are uploaded.\n\nThe app will retrieve this request's result until it arrives, expires or you cancel. A returned suggestion requires separate local approval. This selects a same-user socket, not a verified model identity. Keep the foreground Terminal open. The folder is remembered only until this app quits; no credential is read or saved."
+            alert.addButton(withTitle: "Use temporary runtime"); alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            runtimeDirectory = url
+            socketMessage = "Runtime folder selected. Send explicitly to begin; no request has been sent by selection."
+            reviewCurrent()
+        } catch { show(error) }
+    }
+    @objc private func sendSynthetic() {
+        guard runtimeDirectory != nil else { chooseRuntime(); return }
+        guard !exchangeInFlight, pollingTimer == nil, ![.waiting, .reviewing, .executing].contains(state.phase) else {
+            reviewCurrent(); return // Repeated clicks never create a second event.
+        }
+        do {
+            try transition { _ = try $0.create(at: Date()) }
+            socketRequestID = state.request?.clientRequestID; socketBinding = nil
+            beginSocket(.diagnose)
+        } catch { show(error) }
+    }
+    @objc private func retrySocketRequest() {
+        guard state.phase == .waiting, !exchangeInFlight, pollingTimer == nil else { reviewCurrent(); return }
+        guard runtimeDirectory != nil else { chooseRuntime(); return }
+        socketRequestID = state.request?.clientRequestID
+        beginSocket(.diagnose) // Same immutable envelope, idempotent even after uncertain timeout.
+    }
+    private func stopRetrieval() {
+        pollingTimer?.invalidate(); pollingTimer = nil
+        exchangeGeneration = UUID(); exchangeInFlight = false
+    }
+    private func beginSocket(_ operation: SyntheticSocketOperation) {
+        guard let directory = runtimeDirectory, let request = state.request, state.phase == .waiting,
+              !exchangeInFlight else { return }
+        do {
+            let data = try SyntheticSocketProtocol.command(operation, request: request, at: Date())
+            let token = exchangeGeneration
+            exchangeInFlight = true
+            socketMessage = operation == .diagnose ? "Submitting the fixed synthetic test. No local action is authorized." : "Waiting for dot's synthetic proposal. No local action is authorized."
+            if operation == .diagnose { reviewCurrent() }
+            socketQueue.async { [weak self] in
+                let result = Result { try SyntheticSocketTransport(directory: directory).exchange(data) }
+                DispatchQueue.main.async {
+                    guard let self, self.exchangeGeneration == token, self.state.phase == .waiting,
+                          self.state.request == request else { return }
+                    self.exchangeInFlight = false
+                    do {
+                        let response = try SyntheticSocketProtocol.response(result.get(), request: request, at: Date(), expected: self.socketBinding)
+                        self.socketBinding = response.binding
+                        switch response.status {
+                        case .requested:
+                            self.socketMessage = "Synthetic request accepted. Waiting for a returned proposal; callback acknowledgement alone does not mean analysis is complete. Close this window to keep waiting, or Cancel to stop."
+                            self.scheduleRetrieval()
+                            if operation == .diagnose { self.reviewCurrent() }
+                        case .proposed:
+                            guard let bundle = response.bundle else { throw SyntheticSocketError.invalidResponse }
+                            try self.transition { _ = try $0.receive(bundle, at: Date()) }
+                            self.stopRetrieval()
+                            self.reviewCurrent() // Review only; never authorize or run an action here.
+                        case .cancelled, .expired:
+                            self.stopRetrieval()
+                            try self.transition { try $0.cancel(at: Date()) }
+                            self.socketMessage = "The runtime reports this request is \(response.status.rawValue). No local action is authorized."
+                            self.reviewCurrent()
+                        }
+                    } catch {
+                        self.stopRetrieval()
+                        self.socketMessage = error.localizedDescription + "\nRetrieval stopped. Retry uses the same pending request."
+                        self.reviewCurrent()
+                    }
+                }
+            }
+        } catch { stopRetrieval(); socketMessage = error.localizedDescription; reviewCurrent() }
+    }
+    private func scheduleRetrieval() {
+        pollingTimer?.invalidate()
+        let timer = Timer(timeInterval: 5, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.pollingTimer = nil
+            self.beginSocket(.result)
+        }
+        pollingTimer = timer; RunLoop.main.add(timer, forMode: .common)
+    }
+    private func cancelRemote(_ request: SyntheticClientRequest, directory: URL, token: UUID) {
+        // Local cancellation is already durably committed. This acknowledgement cannot restore it.
+        let binding = socketBinding
+        socketQueue.async { [weak self] in
+            let result = Result { () -> SyntheticSocketResponse in
+                let data = try SyntheticSocketProtocol.command(.cancel, request: request, at: Date())
+                let bytes = try SyntheticSocketTransport(directory: directory).exchange(data)
+                return try SyntheticSocketProtocol.response(bytes, request: request, at: Date(), expected: binding, allowExpired: true)
+            }
+            DispatchQueue.main.async {
+                guard let self, self.exchangeGeneration == token, self.state.phase == .cancelled else { return }
+                switch result {
+                case .success(let response) where response.status == .cancelled:
+                    self.socketMessage = "Cancelled locally and acknowledged by the runtime. An event already delivered to dot cannot be recalled."
+                default:
+                    self.socketMessage = "Cancelled locally. Runtime cancellation could not be confirmed; an already sent event may still be analyzed, but its result cannot authorize local actions."
+                }
+                self.reviewCurrent()
+            }
+        }
     }
     private func add(_ title: String, _ action: Selector, to menu: NSMenu) {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -44,9 +177,11 @@ final class SyntheticRoundtripController: NSObject {
         state = next
     }
     @objc private func createRequest() {
+        guard !exchangeInFlight, pollingTimer == nil, ![.waiting, .reviewing, .executing].contains(state.phase) else { reviewCurrent(); return }
         do {
             try transition { _ = try $0.create(at: Date()) }
-            generation = UUID()
+            generation = UUID(); socketRequestID = nil
+            socketMessage = "Manual file-test request. Use the secondary file tools to save/import it."
             reviewCurrent()
         } catch { show(error) }
     }
@@ -58,7 +193,7 @@ final class SyntheticRoundtripController: NSObject {
             let actions = proposal.actions.enumerated().map { "\($0.offset + 1). \($0.element.description)" }.joined(separator: "\n")
             present(title: "SYNTHETIC · Unverified proposal · Local review", text: """
             SYNTHETIC FIXTURE — this is not a diagnosis of this Mac.
-            UNSIGNED FILE: origin is NOT authenticated. SHA-256 only checks bytes and request binding.
+            UNVERIFIED PROPOSAL ORIGIN: SHA-256 checks bytes and request binding, not the author. The same-user local socket is a transport boundary, not proof of model identity.
 
             Cloud proposal remains dry_run=true. Nothing has executed.
             The actions below form a separate local test manifest. Approval here authorizes only these native functions on this Mac; it never authorizes a remote command or an optimization.
@@ -70,7 +205,7 @@ final class SyntheticRoundtripController: NSObject {
             Before/after cached readings: \(metrics(for: proposal).map { $0.rawValue }.joined(separator: ", ")).
             Freshness and source timestamps are preserved; stale/missing data is not measured improvement.
 
-            No shell, process termination, settings change, deletion, network upload, new collector, or remote listener is available.
+            No shell, process termination, settings change, deletion, receipt upload, new collector, or native remote listener is available.
             Observations stay local. Opening Activity Monitor is not a completed optimization.
 
             UNTRUSTED HUMAN-READABLE SUMMARY (inert text)
@@ -91,16 +226,18 @@ final class SyntheticRoundtripController: NSObject {
             The fixed server fixture is CPU 92%, normal memory pressure, disk 80 GiB.
             It does not describe this Mac.
 
-            Save this request only if you want to test the manual roundtrip. Import it in the signed-in private companion Site, explicitly submit there, and ask dot in your existing chat to read and propose a dry-run plan. Download the returned file and choose Import returned proposal here.
+            \(socketMessage)
 
-            This app has no pairing, account login, upload, polling, model call, or remote command channel. Browser sign-in and submission are separate manual steps. No fixed/private Site URL is embedded in this public app.
+            Explicit Send shares this fixed fixture through the selected foreground runtime. The app retrieves only this request's result every 5 seconds. Nothing resumes automatically after app restart. Closing this preview does not cancel the request; use Cancel.
 
-            A returned file is untrusted. You will review exact actions and separately approve any local test. This pending request belongs to this local app installation and expires after 30 minutes. Creating a new request replaces it.
+            Returned proposals remain dry_run=true. Exact allowed actions require separate local review and approval. Real before/after measurements and receipts remain on this Mac. No key, real telemetry, process detail or filesystem content is sent.
+
+            This request is bound to this local installation and expires after 30 minutes. Cancel before starting a different request. File tools remain available only for manual testing.
 
             \(json)
-            """, buttons: [("Save synthetic request…", #selector(saveRequest)), ("Cancel request", #selector(cancel))])
+            """, buttons: [("Retry same request", #selector(retrySocketRequest)), ("Cancel request", #selector(cancel))])
         } else {
-            present(title: "Synthetic roundtrip", text: "State: \(state.phase.rawValue)\nCreate a new synthetic request to begin. Cancelled, expired or already imported files cannot be replayed.", buttons: [("Create synthetic request…", #selector(createRequest)), ("Last receipt", #selector(showReceipt))])
+            present(title: "Synthetic roundtrip", text: "SYNTHETIC TEST ONLY. State: \(state.phase.rawValue)\n\n\(socketMessage)\n\nSend shares the fixed CPU 92% / normal memory / 80 GiB fixture with the subscribed dot, and may use your model plan. It does not describe this Mac. Real actions require separate local approval. Cancelled, expired or already imported results cannot be replayed.", buttons: [("Send synthetic diagnosis", #selector(sendSynthetic)), ("Choose runtime…", #selector(chooseRuntime)), ("Last receipt", #selector(showReceipt))])
         }
     }
     @objc private func saveRequest() {
@@ -111,7 +248,7 @@ final class SyntheticRoundtripController: NSObject {
         } catch { show(error) }
     }
     @objc private func importProposal() {
-        guard state.phase == .waiting else { show(RoundtripError.invalid("Create a pending synthetic request first. Replayed or already imported proposals are rejected.")); return }
+        guard !exchangeInFlight, pollingTimer == nil, state.phase == .waiting else { show(RoundtripError.invalid("Pause/cancel socket retrieval or create a pending manual request first. Replayed or already imported proposals are rejected.")); return }
         let panel = NSOpenPanel()
         panel.title = "Import an untrusted SYNTHETIC result JSON"
         panel.allowedFileTypes = ["json"]
@@ -154,7 +291,7 @@ final class SyntheticRoundtripController: NSObject {
               proposal.manifestHash == hash else { show(RoundtripError.invalid("The displayed manifest is no longer current")); return }
         let alert = NSAlert()
         alert.messageText = "Run this separate local test?"
-        alert.informativeText = "The imported proposal is synthetic and its origin is unverified. This approval applies only to:\n\n" + proposal.actions.map(\.description).joined(separator: "\n\n") + "\n\nNo optimization is performed. Metric observations remain on this Mac."
+        alert.informativeText = "The returned proposal is synthetic and its origin is unverified. This approval applies only to:\n\n" + proposal.actions.map(\.description).joined(separator: "\n\n") + "\n\nNo optimization is performed. Metric observations remain on this Mac."
         alert.addButton(withTitle: "Approve local test")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -273,13 +410,23 @@ final class SyntheticRoundtripController: NSObject {
             catch { storageFailure = "Expired local receipts could not be removed. Roundtrip actions are disabled." }
         }
     }
-    func stop() { interrupt(reason: "app_termination"); observationTimer?.invalidate(); openTimeout?.cancel() }
+    func stop() { stopRetrieval(); interrupt(reason: "app_termination"); observationTimer?.invalidate(); openTimeout?.cancel() }
     @objc private func cancel() {
         observationTimer?.invalidate(); observationTimer = nil
         openTimeout?.cancel(); openTimeout = nil
         generation = UUID()
-        do { try transition { try $0.cancel(at: Date()) }; reviewCurrent() }
-        catch { show(error) }
+        let request = state.request, directory = runtimeDirectory
+        let shouldCancelRemote = request?.clientRequestID == socketRequestID
+        stopRetrieval()
+        do {
+            try transition { try $0.cancel(at: Date()) }
+            socketMessage = "Cancelled locally. No returned proposal can start an action."
+            if shouldCancelRemote, let request, let directory {
+                socketMessage += " Runtime cancellation is being requested."
+                cancelRemote(request, directory: directory, token: exchangeGeneration)
+            }
+            reviewCurrent()
+        } catch { show(error) }
     }
     private func showRunning() {
         present(title: "SYNTHETIC suggestion · Approved local test running", text: "Only the reviewed native test functions are running. No model, remote upload or optimization runs.\n\nYou may cancel observation. An Activity Monitor launch already requested from macOS cannot be retracted; an opened app is not automatically closed. Sleep, pause or collection changes interrupt measurement; no automatic retry occurs.", buttons: [("Cancel local check", #selector(cancel))])

@@ -1,3 +1,5 @@
+> This document preserves the secondary manual-file test protocol. The primary 0.3.0 test flow is [explicit native socket submission and result retrieval](NATIVE_SOCKET_ROUNDTRIP.md). The same strict proposal decoder and separate approval runner are reused.
+
 # Native synthetic file roundtrip (experimental)
 
 This increment adds a manual file boundary to the existing local monitor. It is not native authentication, live-data upload, automatic dot delivery or remote execution.
