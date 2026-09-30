@@ -6,7 +6,9 @@ This is a protocol prototype, not a completed monitor integration. No telemetry 
 
 - Local signed mock-event roundtrip passes: create fixed request → verified mock callback → read tool → strict proposal write → client result.
 - The private Site is a discovery/read/proposal probe. Its `events/subscribe` returns MCP `Unsupported` (-32014), feature `callbackTransport`, reason `callback_transport_unverified`. It does not accept, store or use callback secrets.
-- Real plugin discovery, same-chat delivery and return have not yet been verified. A successful build, unit test or callback HTTP 2xx cannot establish them.
+- Live verification on 2026-09-30: the private plugin connected in the intended dot conversation; `server/discover` and `events/list` were observed; the actual automation event-source catalog exposed `diagnostic.requested` with the expected stream filter.
+- A manual live tool roundtrip in that same dot passed: create fixed synthetic request → read the exact request/hash → submit a schema-valid dry-run proposal → retrieve the identical proposal/hash. Private request IDs and account data are intentionally omitted here.
+- Automatic callback subscription, event wake-up and same-chat event-driven return remain unverified. No live `events/subscribe` call was attempted while the callback transport is blocked. A successful build, unit test, manual tool flow or callback HTTP 2xx cannot establish the automatic path.
 - There is no native Mac adapter, pairing, telemetry upload, local persistent agent, model-provider credential, execute endpoint or shell field.
 
 ## Contract and security
