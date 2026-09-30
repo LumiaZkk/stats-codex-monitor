@@ -5,11 +5,17 @@ import Darwin
 // The Python harness owns fake sockets; this invokes the production Darwin transport.
 if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--socket-probe" {
     do {
-        let reply = try SyntheticSocketTransport(directory: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)).exchange(Data("{\"probe\":true}".utf8))
+        let cancellation = SyntheticSocketCancellation()
+        if CommandLine.arguments[3] == "pre_cancel" { cancellation.cancel() }
+        if CommandLine.arguments[3] == "cancel" { DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { cancellation.cancel() } }
+        let reply = try SyntheticSocketTransport(directory: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)).exchange(Data("{\"probe\":true}".utf8), cancellation: cancellation)
         guard CommandLine.arguments[3] == "success", reply == Data("{\"ok\":true}".utf8) else { exit(2) }
         exit(0)
     } catch {
         guard CommandLine.arguments[3] != "success" else { print(error.localizedDescription); exit(3) }
+        if ["cancel", "pre_cancel"].contains(CommandLine.arguments[3]) {
+            guard case SyntheticSocketError.cancelled = error else { exit(5) }
+        }
         if CommandLine.arguments[3] == "timeout" {
             guard case SyntheticSocketError.timeout = error else { exit(4) }
         }
@@ -314,3 +320,8 @@ try localStorage.save(pendingRestart)
 let pendingReload = try localStorage.load(at: testNow)
 check(pendingReload.phase == .waiting && pendingReload.request == goldenRequest && pendingReload.activeReceipt == nil, "Pending restart preserves only immutable data, no transport or approval")
 print("PASS: \(passed) total production assertions including socket protocol")
+
+let runtimeSocketGolden = try Data(contentsOf: URL(fileURLWithPath: "DiagnosticsTests/Fixtures/native-socket-status-v1.json"))
+let decodedRuntimeSocketGolden = try SyntheticSocketProtocol.response(runtimeSocketGolden, request: goldenRequest, at: testNow)
+check(decodedRuntimeSocketGolden.status == .proposed && decodedRuntimeSocketGolden.binding == socketBinding, "Actual runtime-generated socket golden fixture is compatible")
+print("PASS: \(passed) total production assertions including shared runtime socket vector")

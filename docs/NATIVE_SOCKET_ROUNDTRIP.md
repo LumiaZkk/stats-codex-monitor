@@ -64,10 +64,16 @@ attestation of a model or protection from a compromised user account.
 
 ## Cancellation and interruption
 
-Local cancellation is saved before the app asks the runtime to cancel. Late
+Cancellation stops queued/in-flight IPC cooperatively (at most a 250ms poll interval)
+and is saved locally before the app asks the runtime to cancel. Late
 responses cannot revive it. Remote cancellation is best-effort and the UI reports
 whether acknowledgement was received. Already delivered events cannot be recalled.
-A cancelled/expired response cannot reach approval. An already submitted OS request
+A cancelled/expired response cannot reach approval. After explicit local approval, socket requests are rechecked against the runtime
+before approval is committed and any action starts. The user can cancel during
+this check. A failure or changed proposal requires a new approval. Once local
+approval is committed, cancellation at the remote runtime cannot recall it; use
+the native Cancel control for the active local test. This is a local consent
+boundary, not an atomic distributed execution transaction. An already submitted OS request
 to open Activity Monitor cannot be recalled; Cancel does not close that app.
 
 The runner still enforces proposal expiry before every action and during

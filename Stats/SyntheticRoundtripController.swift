@@ -23,6 +23,8 @@ final class SyntheticRoundtripController: NSObject {
     private var socketMessage = "Choose the foreground runtime's private folder, then send a synthetic test."
     private var socketRequestID: String?
     private var socketBinding: SyntheticSocketBinding?
+    private var approvalCheckInFlight = false
+    private var socketCancellation = SyntheticSocketCancellation()
 
 
     init(directory: URL, capture: @escaping Capture) {
@@ -90,19 +92,20 @@ final class SyntheticRoundtripController: NSObject {
     }
     private func stopRetrieval() {
         pollingTimer?.invalidate(); pollingTimer = nil
-        exchangeGeneration = UUID(); exchangeInFlight = false
+        socketCancellation.cancel(); socketCancellation = SyntheticSocketCancellation()
+        exchangeGeneration = UUID(); exchangeInFlight = false; approvalCheckInFlight = false
     }
     private func beginSocket(_ operation: SyntheticSocketOperation) {
         guard let directory = runtimeDirectory, let request = state.request, state.phase == .waiting,
               !exchangeInFlight else { return }
         do {
             let data = try SyntheticSocketProtocol.command(operation, request: request, at: Date())
-            let token = exchangeGeneration
+            let token = exchangeGeneration, cancellation = socketCancellation
             exchangeInFlight = true
             socketMessage = operation == .diagnose ? "Submitting the fixed synthetic test. No local action is authorized." : "Waiting for dot's synthetic proposal. No local action is authorized."
             if operation == .diagnose { reviewCurrent() }
             socketQueue.async { [weak self] in
-                let result = Result { try SyntheticSocketTransport(directory: directory).exchange(data) }
+                let result = Result { try SyntheticSocketTransport(directory: directory).exchange(data, cancellation: cancellation) }
                 DispatchQueue.main.async {
                     guard let self, self.exchangeGeneration == token, self.state.phase == .waiting,
                           self.state.request == request else { return }
@@ -287,14 +290,44 @@ final class SyntheticRoundtripController: NSObject {
         return Data(bytes.prefix(count))
     }
     @objc private func authorize() {
-        guard let hash = displayedManifestHash, state.phase == .reviewing, let proposal = state.proposal,
-              proposal.manifestHash == hash else { show(RoundtripError.invalid("The displayed manifest is no longer current")); return }
+        guard !approvalCheckInFlight, let hash = displayedManifestHash, state.phase == .reviewing,
+              let proposal = state.proposal, proposal.manifestHash == hash else {
+            show(RoundtripError.invalid("The displayed manifest is no longer current or is already being checked")); return
+        }
         let alert = NSAlert()
         alert.messageText = "Run this separate local test?"
-        alert.informativeText = "The returned proposal is synthetic and its origin is unverified. This approval applies only to:\n\n" + proposal.actions.map(\.description).joined(separator: "\n\n") + "\n\nNo optimization is performed. Metric observations remain on this Mac."
-        alert.addButton(withTitle: "Approve local test")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        alert.informativeText = "The returned proposal is synthetic and its origin is unverified. This approval applies only to:\n\n" + proposal.actions.map(\.description).joined(separator: "\n\n") + "\n\nNo optimization is performed. Metric observations remain on this Mac. Socket proposals are rechecked after your approval and before actions start. Later remote cancellation cannot recall a locally started action; use this app's Cancel control."
+        alert.addButton(withTitle: "Approve local test"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn,
+              state.phase == .reviewing, state.proposal?.manifestHash == hash else { return }
+        if state.request?.clientRequestID == socketRequestID {
+            guard let directory = runtimeDirectory, let request = state.request else { return }
+            let token = exchangeGeneration, binding = socketBinding, cancellation = socketCancellation
+            approvalCheckInFlight = true
+            present(title: "Checking approved synthetic proposal", text: "Your local approval is being checked against the temporary runtime. No action has started. You can still Cancel. A failed or changed response requires a new explicit approval.", buttons: [("Cancel request", #selector(cancel))])
+            socketQueue.async { [weak self] in
+                let result = Result { () -> VerifiedSyntheticProposal in
+                    let data = try SyntheticSocketProtocol.command(.result, request: request, at: Date())
+                    let bytes = try SyntheticSocketTransport(directory: directory).exchange(data, cancellation: cancellation)
+                    let response = try SyntheticSocketProtocol.response(bytes, request: request, at: Date(), expected: binding)
+                    guard response.status == .proposed, let bundle = response.bundle else {
+                        throw RoundtripError.invalid("The runtime no longer has an active proposal. Cancel this local request.")
+                    }
+                    return try VerifiedSyntheticProposal.importFile(bundle, pending: request, at: Date())
+                }
+                DispatchQueue.main.async {
+                    guard let self, self.exchangeGeneration == token, self.state.phase == .reviewing,
+                          self.state.request == request else { return }
+                    self.approvalCheckInFlight = false
+                    do {
+                        guard try result.get().manifestHash == hash else { throw RoundtripError.invalid("The proposal changed before local execution") }
+                        self.startApprovedLocalTest(hash: hash, proposal: proposal)
+                    } catch { self.reviewCurrent(); self.show(error) }
+                }
+            }
+        } else { startApprovedLocalTest(hash: hash, proposal: proposal) }
+    }
+    private func startApprovedLocalTest(hash: String, proposal: VerifiedSyntheticProposal) {
         do {
             let before = capture(metrics(for: proposal))
             try transition { _ = try $0.authorize(manifestHash: hash, before: before, at: Date()) }

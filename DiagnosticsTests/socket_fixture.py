@@ -12,7 +12,7 @@ passed = 0
 
 
 def run_case(name, payload=b'{"ok":true}\n', expectation='failure', mode=0o600,
-             folder_mode=0o700, symlink=False, regular=False, delay=0):
+             folder_mode=0o700, symlink=False, regular=False, delay=0, hold_open=0):
     global passed
     # Short path respects macOS's 104-byte sockaddr_un boundary.
     with tempfile.TemporaryDirectory(prefix='sdipc-', dir='/tmp') as directory:
@@ -49,6 +49,8 @@ def run_case(name, payload=b'{"ok":true}\n', expectation='failure', mode=0o600,
                             time.sleep(delay)
                         if payload:
                             connection.sendall(payload)
+                        if hold_open:
+                            time.sleep(hold_open)
                 except (TimeoutError, BrokenPipeError, ConnectionResetError, OSError):
                     pass
 
@@ -62,6 +64,8 @@ def run_case(name, payload=b'{"ok":true}\n', expectation='failure', mode=0o600,
             server.close()
         assert result.returncode == 0, f'{name}: {result.stdout} {result.stderr} (exit {result.returncode})'
         assert not errors, errors
+        if expectation in ('cancel', 'pre_cancel'):
+            assert elapsed < 2, (name, elapsed)
         if expectation == 'timeout':
             assert 4.5 <= elapsed < 7, (name, elapsed)
         passed += 1
@@ -77,4 +81,7 @@ run_case('reject two response frames', payload=b'{"ok":true}\n{\"other\":true}\n
 run_case('reject oversized response', payload=b'x' * 16385 + b'\n')
 run_case('reject empty EOF', payload=b'')
 run_case('bounded slow peer', expectation='timeout', delay=6)
+run_case('require EOF after valid frame', expectation='timeout', hold_open=6)
+run_case('cooperative cancel before IPC', expectation='pre_cancel')
+run_case('cooperative cancel while peer pending', expectation='cancel', hold_open=6)
 print(f'PASS: {passed} real Unix socket transport cases')
