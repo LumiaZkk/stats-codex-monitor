@@ -18,6 +18,7 @@
   },
   "include": [
     "bridge/**/*.mts",
-    "tests/**/*.mts"
+    "tests/**/*.mts",
+    "scripts/**/*.mts"
   ]
 }
