@@ -41,3 +41,5 @@ jobs:
           unzip "$RUNNER_TEMP/tunnel-client.zip" tunnel-client -d "$RUNNER_TEMP/stats-official-client"
       - name: Verify credential-free MCP 2.0 transport
         run: TUNNEL_CLIENT_BIN="$RUNNER_TEMP/stats-official-client/tunnel-client" npm run test:official-tunnel
+      - name: Verify private local socket request and proposal transport
+        run: TUNNEL_CLIENT_BIN="$RUNNER_TEMP/stats-official-client/tunnel-client" npm run test:private-runtime

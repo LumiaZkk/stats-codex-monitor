@@ -19,6 +19,7 @@
   "include": [
     "bridge/**/*.mts",
     "tests/**/*.mts",
-    "scripts/**/*.mts"
+    "scripts/**/*.mts",
+    "tunnel/**/*.mts"
   ]
 }
