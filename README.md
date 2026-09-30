@@ -4,7 +4,7 @@ A local-first macOS performance companion, built as a small native extension of 
 
 CPU, memory, swap and startup-disk monitoring stay on your Mac. Open **SD → Diagnose…** to review a bounded, sanitized snapshot and explicitly share it with dot, Codex, or another analyzer. No AI runs in the background, and the app never executes an analyzer's suggested commands.
 
-**Status: experimental source preview, version 0.1.0.** Cloud source checks have been run. A full macOS build, UI validation, and resource-use measurements are still required before calling this a working release. No prebuilt/notarized release is provided yet.
+**Status: experimental source preview, version 0.2.0/build2.** This branch adds a synthetic manual file roundtrip and separately approved bounded local tests. GitHub CI covers Swift assertions and unsigned compilation; check the exact commit run. Native UI/consent/interruption validation is still required. This is not a notarized release.
 
 [Synthetic native roundtrip preview](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
 
@@ -32,7 +32,7 @@ Codex CLI `exec --sandbox read-only` is not a snapshot-only security boundary: i
 Requires macOS 12 or later and full Xcode with its command-line tools selected. The fork keeps upstream Swift 5 project settings. Xcode 26.3 is the initial intended verification environment; compatibility is not yet certified.
 
 ```sh
-git clone https://github.com/LumiaZkk/stats-codex-monitor.git
+git clone --branch native-synthetic-roundtrip https://github.com/LumiaZkk/stats-codex-monitor.git
 cd stats-codex-monitor
 ./scripts/build-diagnostics.sh
 ```
