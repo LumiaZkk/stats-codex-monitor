@@ -60,8 +60,8 @@ function records(value: unknown): RecordData[] {
 }
 
 // A parser, not an address-policy filter. In particular, private, malformed and
-// IPv6 address strings are retained so the callback transport rejects the whole
-// candidate set. Nothing here connects to a returned address.
+// IPv6 address strings are retained for the callback transport's whole-answer
+// validation. Nothing here connects to a returned address.
 type DnsResult = { addresses: CloudflareAddress[]; chain: string[] };
 function parseDnsResult(body: string, hostname: string, type: CloudflareQuestionType): DnsResult {
   const name = queryName(hostname); questionType(type);

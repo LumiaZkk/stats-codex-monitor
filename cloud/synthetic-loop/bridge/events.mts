@@ -5,9 +5,9 @@ export interface SubscriptionStore { get(id: string): Promise<Subscription | nul
 export type SafePost = (url: string, body: string, headers: Record<string, string>) => Promise<{ status: number; body: string }>;
 // Finite diagnostic vocabulary only. Never retain URL, secret, headers, response
 // body, request fields or arbitrary exception messages in diagnostic state.
-const safeReasons = ['invalid_event','invalid_schema','invalid_callback','invalid_signing_secret','invalid_ttl','replay_unsupported','access_revoked','authentication_required','non_public_callback','callback_transport_unverified','callback_timeout','callback_dns_failed','callback_tls_failed','callback_connection_failed','callback_transport_error','callback_http_error','invalid_challenge_response','challenge_failed','subscription_limit'] as const;
+const safeReasons = ['invalid_event','invalid_schema','invalid_callback','invalid_signing_secret','invalid_ttl','replay_unsupported','access_revoked','authentication_required','non_public_callback','callback_ipv4_unavailable','callback_transport_unverified','callback_timeout','callback_dns_failed','callback_tls_failed','callback_connection_failed','callback_transport_error','callback_http_error','invalid_challenge_response','challenge_failed','subscription_limit'] as const;
 type SafeReason = typeof safeReasons[number] | 'subscription_failed';
-const addressCategories = ['public_ipv4','non_public_ipv4','benchmark_ipv4','unsupported_ipv6','invalid_address'] as const;
+const addressCategories = ['public_ipv4','non_public_ipv4','benchmark_ipv4','public_ipv6','non_public_ipv6','invalid_address'] as const;
 export type AddressCategories = Record<typeof addressCategories[number],number>;
 export class CallbackAddressFault extends Fault {
   readonly addressCategories: AddressCategories;
@@ -20,7 +20,7 @@ export type SubscriptionDiagnostic = { stage: 'validating' | 'verifying' | 'stor
 function safeReason(error: unknown): SafeReason { return error instanceof Fault && (safeReasons as readonly string[]).includes(error.reason) ? error.reason as SafeReason : 'subscription_failed'; }
 export function callbackFault(error: unknown): Fault {
   if (error instanceof CallbackAddressFault) return error;
-  if (error instanceof Fault && ['invalid_callback','non_public_callback','callback_transport_unverified','callback_timeout','callback_dns_failed','callback_tls_failed','callback_connection_failed','callback_transport_error'].includes(error.reason)) return new Fault(error.reason,503,-32015);
+  if (error instanceof Fault && ['invalid_callback','non_public_callback','callback_ipv4_unavailable','callback_transport_unverified','callback_timeout','callback_dns_failed','callback_tls_failed','callback_connection_failed','callback_transport_error'].includes(error.reason)) return new Fault(error.reason,503,-32015);
   const code = (error as { code?: unknown })?.code;
   const reason = ['ABORT_ERR','ETIMEDOUT'].includes(String(code)) || (error as { name?: unknown })?.name === 'TimeoutError' ? 'callback_timeout'
     : ['ENOTFOUND','EAI_AGAIN'].includes(String(code)) ? 'callback_dns_failed'

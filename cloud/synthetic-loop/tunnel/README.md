@@ -134,11 +134,11 @@ exception text. `accepted` records that the callback was verified and subscripti
 stored at that time; `callback_delivery` separately reflects current active state,
 including later rollback or unsubscribe. A process restart clears the diagnostic.
 
-An address-policy rejection also includes bounded counts of public IPv4, blocked
-IPv4, the benchmark IPv4 subset (198.18/15), unsupported IPv6, and invalid addresses.
-No hostname or address is exposed. IPv6 remains unsupported in this conservative
-spike; that category does not claim that every IPv6 address is non-public. Empty
-DNS results have zero counts. The whole-answer rejection policy is unchanged.
+An address-policy rejection also includes bounded counts of admitted/blocked IPv4
+and IPv6, the benchmark IPv4 subset (198.18/15), and invalid addresses. No hostname
+or address is exposed. Empty DNS results have zero counts. Every returned A and
+AAAA address must pass; a rejected IPv6 answer is never ignored because an A
+record is available.
 
 Callback address validation, DNS pinning, TLS verification and redirect refusal
 remain mandatory. Diagnose a categorized failure before changing transport code;
@@ -159,10 +159,20 @@ with Cloudflare, using its documented `https://cloudflare-dns.com/dns-query` ser
 bootstrapped to 1.1.1.1 with ordinary hostname/certificate verification. It does not
 change system DNS, the VPN, proxy settings, or the official client's control-plane
 resolver. There is no automatic fallback or arbitrary resolver endpoint setting.
-A and AAAA answers are checked together; non-public IPv4 and currently unsupported
-IPv6 still fail closed. Callback connections remain pinned to validated public
-addresses with original-host TLS verification, deadlines and no redirects.
+A and AAAA answers are checked together. IPv6 must belong to a pinned snapshot of
+IANA-to-RIR allocated global unicast prefixes, with registered special-purpose
+ranges and ISATAP interface forms excluded. This rejects local, mapped,
+registered NAT64, documentation, multicast, protocol-special, deprecated and
+IANA-reserved space. Unknown future allocations fail closed until reviewed.
+See `bridge/ipv6.mts` for the registry references and snapshot date.
 
-Before enabling this mode, run a credential-free public-host probe on the intended
+The classifier does not prove BGP reachability, end-user allocation, or native
+IPv6 routing: RFC 6052 permits network-specific NAT64 prefixes inside ordinary
+global allocations. Actual callback connections **always use a separately
+validated A record**, with original-host TLS verification, deadlines and no
+redirects. A public IPv6-only response reports `callback_ipv4_unavailable`;
+the transport never falls back to connecting through AAAA records.
+
+Before enabling this mode, run the credential-free public-host probe on the intended
 computer. Enabling the mode requires a clean foreground restart and direct user
 key entry. The existing process cannot hot-load code or resolver changes.

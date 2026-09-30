@@ -73,20 +73,20 @@ test('MCP discovery, auth and hosted callback gate accurately report readiness',
   assert.equal(TOOLS.find(t => t.name === 'submit_diagnostic_plan')?.annotations.readOnlyHint, false);
   assert.ok(!TOOLS.some(t => t.name.includes('execute')));
 });
-test('callback classifier rejects local, special, multicast, documentation and all IPv6', () => {
+test('IPv4-only classifier rejects local, special, multicast, documentation and IPv6 inputs', () => {
   for (const address of ['127.0.0.1','10.0.0.1','169.254.169.254','172.16.0.1','192.168.1.1','100.64.0.1','198.18.0.1','192.0.2.1','198.51.100.1','203.0.113.1','224.0.0.1','255.255.255.255','::1','::ffff:127.0.0.1','2001:4860:4860::8888']) assert.equal(publicIPv4(address), false, address);
   assert.equal(publicIPv4('8.8.8.8'), true);
 });
-test('DNS categories distinguish unsupported IPv6 from blocked and benchmark IPv4 without weakening rejection', () => {
-  assert.deepEqual(classifyAddresses([{address:'8.8.8.8',family:4},{address:'198.18.1.1',family:4},{address:'127.0.0.1',family:4},{address:'2001:4860:4860::8888',family:6},{address:'::1',family:6},{address:'invalid',family:4}]),{public_ipv4:1,non_public_ipv4:2,benchmark_ipv4:1,unsupported_ipv6:2,invalid_address:1});
-  assert.deepEqual(classifyAddresses([]),{public_ipv4:0,non_public_ipv4:0,benchmark_ipv4:0,unsupported_ipv6:0,invalid_address:0});
+test('DNS categories distinguish public and blocked IPv6 from blocked and benchmark IPv4 without weakening rejection', () => {
+  assert.deepEqual(classifyAddresses([{address:'8.8.8.8',family:4},{address:'198.18.1.1',family:4},{address:'127.0.0.1',family:4},{address:'2001:4860:4860::8888',family:6},{address:'::1',family:6},{address:'invalid',family:4}]),{public_ipv4:1,non_public_ipv4:2,benchmark_ipv4:1,public_ipv6:1,non_public_ipv6:1,invalid_address:1});
+  assert.deepEqual(classifyAddresses([]),{public_ipv4:0,non_public_ipv4:0,benchmark_ipv4:0,public_ipv6:0,non_public_ipv6:0,invalid_address:0});
 });
 test('a custom resolver receives hostname only and cannot bypass whole-answer public-address rejection',async()=>{
   let observed='';
   const post=makePinnedHttpsPost(async(hostname)=>{observed=hostname;return [{address:'8.8.8.8',family:4},{address:'198.18.1.1',family:4}];});
   await assert.rejects(post('https://receiver.example/private/callback?opaque=fixture','fixture body',{'webhook-signature':'fixture'}),/non_public_callback/);
   assert.equal(observed,'receiver.example');
-  for(const addresses of [[],[{address:'2001:4860:4860::8888',family:6}],[{address:'127.0.0.1',family:4}]])await assert.rejects(makePinnedHttpsPost(async()=>addresses)('https://receiver.example','fixture',{}),/non_public_callback/);
+  for(const addresses of [[],[{address:'::1',family:6}],[{address:'127.0.0.1',family:4}]])await assert.rejects(makePinnedHttpsPost(async()=>addresses)('https://receiver.example','fixture',{}),/non_public_callback/);
 });
 test('runtime stop aborts pending DNS and rejects later resolved public addresses before callback connection',async(t)=>{
   let connects=0;t.mock.method(https,'request',()=>{connects++;throw new Error('unexpected network request');});

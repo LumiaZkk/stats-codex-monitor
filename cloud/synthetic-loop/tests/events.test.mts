@@ -80,7 +80,7 @@ test('HTTP, malformed JSON, mismatch and successful verification have distinct s
   await assert.rejects(s.events.subscribe('a',{...params,delivery:{...params.delivery,secret:'bad'}}));assert.deepEqual(s.events.lastSubscription,{stage:'failed',reason:'invalid_signing_secret'});
 });
 test('address-policy diagnostics retain bounded category counts without address or hostname data', async () => {
-  const counts={public_ipv4:1,non_public_ipv4:2,benchmark_ipv4:1,unsupported_ipv6:3,invalid_address:0};
+  const counts={public_ipv4:1,non_public_ipv4:2,benchmark_ipv4:1,public_ipv6:2,non_public_ipv6:1,invalid_address:0};
   const e=new CallbackAddressFault({...counts,hostname:'private.invalid',address:'198.18.1.1'} as typeof counts);
   const s=setup(async()=>{throw e;});await assert.rejects(s.events.subscribe('a',params));
   assert.deepEqual(s.events.lastSubscription,{stage:'failed',reason:'non_public_callback',address_categories:counts});
