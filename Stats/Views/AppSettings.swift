@@ -41,11 +41,11 @@ class ApplicationSettings: NSStackView {
     
     private var systemWidgetsUpdatesState: Bool {
         get {
-            let userDefaults = UserDefaults(suiteName: "\(Bundle.main.object(forInfoDictionaryKey: "TeamId") as! String).eu.exelban.Stats.widgets")
+            let userDefaults = UserDefaults(suiteName: "\(Bundle.main.object(forInfoDictionaryKey: "TeamId") as! String).io.github.LumiaZkk.StatsDiagnostics.widgets")
             return userDefaults?.bool(forKey: "systemWidgetsUpdates_state") ?? false
         }
         set {
-            let userDefaults = UserDefaults(suiteName: "\(Bundle.main.object(forInfoDictionaryKey: "TeamId") as! String).eu.exelban.Stats.widgets")
+            let userDefaults = UserDefaults(suiteName: "\(Bundle.main.object(forInfoDictionaryKey: "TeamId") as! String).io.github.LumiaZkk.StatsDiagnostics.widgets")
             userDefaults?.set(newValue, forKey: "systemWidgetsUpdates_state")
         }
     }
@@ -99,6 +99,7 @@ class ApplicationSettings: NSStackView {
             items: AppUpdateIntervals,
             selected: self.updateIntervalValue
         )
+        self.updateSelector?.isEnabled = !DiagnosticsBridge.enabled
         self.startAtLoginBtn = switchView(
             action: #selector(self.toggleLaunchAtLogin),
             state: LaunchAtLogin.isEnabled
@@ -120,10 +121,7 @@ class ApplicationSettings: NSStackView {
                 action: #selector(self.toggleMenuBarPosition),
                 state: self.keepMenuBarPosition
             )),
-            PreferencesRow("macOS widgets", component: switchView(
-                action: #selector(self.toggleSystemWidgetsUpdatesState),
-                state: self.systemWidgetsUpdatesState
-            ))
+            PreferencesRow("Diagnostics privacy", component: textView("Local only · explicit snapshot sharing"))
         ]))
         
         self.combinedModulesView = PreferencesSection([
@@ -174,7 +172,7 @@ class ApplicationSettings: NSStackView {
             PreferencesRow(component: buttonView(#selector(self.logoutFromRemote), text: localizedString("Sign out"))),
             PreferencesRow(component: buttonView(#selector(self.deregisterFromRemote), text: localizedString("Deregister")))
         ])
-        scrollView.stackView.addArrangedSubview(self.remoteView!)
+        if !DiagnosticsBridge.enabled { scrollView.stackView.addArrangedSubview(self.remoteView!) }
         self.remoteView?.setRowVisibility(1, newState: false)
         self.remoteView?.setRowVisibility(2, newState: false)
         self.remoteView?.setRowVisibility(3, newState: false)
@@ -204,7 +202,7 @@ class ApplicationSettings: NSStackView {
                 component: buttonView(#selector(self.uninstallHelper), text: localizedString("Uninstall"))
             )
         ])
-        scrollView.stackView.addArrangedSubview(self.fanHelperView!)
+        if !DiagnosticsBridge.enabled { scrollView.stackView.addArrangedSubview(self.fanHelperView!) }
         
         self.addArrangedSubview(scrollView)
         

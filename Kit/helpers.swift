@@ -2246,6 +2246,7 @@ public final class SystemWidgetUpdates {
     }
     
     public func update<T: Encodable>(_ value: T, key: String, kinds: [String], defaults: UserDefaults?) {
+        guard !DiagnosticsBridge.enabled else { return }
         guard let defaults else { return }
         self.queue.async {
             guard defaults.bool(forKey: "systemWidgetsUpdates_state") else { return }

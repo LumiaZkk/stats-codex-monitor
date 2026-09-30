@@ -20,6 +20,7 @@ internal class LoadReader: Reader<CPU_Load> {
     private var numCPUs: uint = 0
     private let CPUUsageLock: NSLock = NSLock()
     private var previousInfo = host_cpu_load_info()
+    private var lastDiagnosticRead: TimeInterval?
     private var hasHyperthreadingCores = false
     
     private var response: CPU_Load = CPU_Load()
@@ -41,6 +42,14 @@ internal class LoadReader: Reader<CPU_Load> {
     
     public override func read() {
         self.CPUUsageLock.lock()
+        if DiagnosticsBridge.enabled {
+            let now = ProcessInfo.processInfo.systemUptime
+            if let last = self.lastDiagnosticRead, now - last >= 0, now - last < 55 {
+                self.CPUUsageLock.unlock()
+                return
+            }
+            self.lastDiagnosticRead = now
+        }
         
         let result: kern_return_t = host_processor_info(machHostPort, PROCESSOR_CPU_LOAD_INFO, &self.numCPUsU, &self.cpuInfo, &self.numCpuInfo)
         if result == KERN_SUCCESS {

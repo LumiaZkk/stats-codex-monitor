@@ -104,6 +104,17 @@ extension AppDelegate {
     }
     
     internal func defaultValues() {
+        if DiagnosticsBridge.enabled {
+            Store.shared.set(key: "update-interval", value: AppUpdateInterval.never.rawValue)
+            for name in ["CPU", "RAM", "Disk"] {
+                Store.shared.set(key: "\(name)_updateInterval", value: name == "Disk" ? 300 : 60)
+                Store.shared.set(key: "\(name)_updateTopInterval", value: 300)
+            }
+            Store.shared.set(key: "remote_monitoring", value: false)
+            Store.shared.set(key: "remote_control", value: false)
+            Store.shared.set(key: "remote_update", value: false)
+            return
+        }
         if Store.shared.exist(key: "runAtLoginInitialized") {
             LaunchAtLogin.migrate()
         }
@@ -159,6 +170,7 @@ extension AppDelegate {
     }
     
     internal func setup(completion: @escaping () -> Void) {
+        if DiagnosticsBridge.enabled { completion(); return }
         if Store.shared.exist(key: "setupProcess") || Store.shared.exist(key: "runAtLoginInitialized") {
             completion()
             return
@@ -235,6 +247,7 @@ extension AppDelegate {
     }
     
     public func checkIfShouldShowSupportWindow() {
+        guard !DiagnosticsBridge.enabled else { return }
         if !Store.shared.exist(key: "setupProcess") && !Store.shared.exist(key: "runAtLoginInitialized") {
             return
         }
@@ -273,6 +286,7 @@ extension AppDelegate {
     }
     
     public func tryToShowSupportWindow(interaction: Bool = false) {
+        guard !DiagnosticsBridge.enabled else { return }
         guard Store.shared.bool(key: "support_pending", defaultValue: false) else { return }
         
         if SystemStats.shared.auth.hasCredentials() {
