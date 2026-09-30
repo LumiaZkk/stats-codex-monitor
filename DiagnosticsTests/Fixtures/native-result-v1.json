@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "stats_synthetic_result",
+  "integrity": "unsigned_sha256",
+  "client_request": {
+    "schema_version": 1,
+    "kind": "stats_synthetic_request",
+    "client_request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "fixture": "high-cpu-v1",
+    "created_at": "2026-09-30T09:15:00.000Z",
+    "expires_at": "2026-09-30T09:45:00.000Z",
+    "client_request_hash": "01a04252d767ba642bc2dda18661fca82562c35fb0e63b00c7978f72a9f6ea93"
+  },
+  "request_canonical_json": "{\"client_request\":{\"client_request_hash\":\"01a04252d767ba642bc2dda18661fca82562c35fb0e63b00c7978f72a9f6ea93\",\"client_request_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"created_at\":\"2026-09-30T09:15:00.000Z\",\"expires_at\":\"2026-09-30T09:45:00.000Z\",\"fixture\":\"high-cpu-v1\",\"kind\":\"stats_synthetic_request\",\"schema_version\":1},\"created_at\":\"2026-09-30T09:16:00.000Z\",\"expires_at\":\"2026-09-30T09:45:00.000Z\",\"fixture\":\"high-cpu-v1\",\"request_id\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"schema_version\":1,\"snapshot\":{\"cpu_utilization\":0.92,\"disk_free_gib\":80,\"memory_pressure\":\"normal\",\"source\":\"synthetic\"},\"stream_id\":\"synthetic-smoke-v1\",\"synthetic\":true}",
+  "request_hash": "f50df3dc65d0acecb21fbefe77a341114803022c9ed6700ab501267d7486316a",
+  "status": "proposed",
+  "proposal_canonical_json": "{\"actions\":[{\"dry_run\":true,\"target\":\"current_device\",\"type\":\"open_activity_monitor\"},{\"dry_run\":true,\"duration_seconds\":60,\"metrics\":[\"cpu_utilization\",\"memory_pressure\",\"disk_free_gib\"],\"type\":\"observe_metrics\"}],\"dry_run\":true,\"expires_at\":\"2026-09-30T09:45:00.000Z\",\"plan_id\":\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\",\"request_hash\":\"f50df3dc65d0acecb21fbefe77a341114803022c9ed6700ab501267d7486316a\",\"request_id\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"schema_version\":1,\"summary\":\"Synthetic CPU fixture. Review “Activity Monitor” locally.\\nNo optimization is claimed.\"}",
+  "proposal_hash": "26a8866e8661d9360958432b78a0b0d05d4ee046be74be35351ee5aa1d8546ba",
+  "exported_at": "2026-09-30T09:17:00.000Z"
+}

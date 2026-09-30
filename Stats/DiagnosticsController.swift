@@ -13,6 +13,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
     private var sleeping = false
     private var housekeeping: Timer?
     private var saveWork: DispatchWorkItem?
+    private var roundtrip: SyntheticRoundtripController?
     private var window: NSWindow?
     private var textView: NSTextView?
     private var previewPrompt = ""
@@ -29,6 +30,9 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
         archive = (try? storage.load(at: Date())) ?? DiagnosticsArchive()
         archive.prune(at: Date())
         archive.rules.resetContinuity()
+        roundtrip = SyntheticRoundtripController(directory: directory) { [weak self] metrics in
+            self?.captureLocalMetrics(metrics) ?? metrics.map { LocalMetricReading(metric: $0, value: nil, observedAt: nil, freshness: .unavailable) }
+        }
         item.button?.title = "SD ·"
         item.button?.toolTip = "Stats Diagnostics: local CPU, memory and disk history"
         let menu = NSMenu()
@@ -68,6 +72,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
             guard let self else { return }
             let count = self.archive.samples.count + self.archive.events.count
             self.archive.prune(at: Date())
+            self.roundtrip?.maintain(at: Date())
             self.updateIndicator()
             if count != self.archive.samples.count + self.archive.events.count { self.save() }
         }
@@ -76,6 +81,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
     }
 
     func stop() {
+        roundtrip?.stop()
         housekeeping?.invalidate()
         saveWork?.cancel()
         save()
@@ -85,6 +91,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
         NSStatusBar.system.removeStatusItem(item)
     }
     private func resetContinuity() {
+        roundtrip?.interrupt(reason: "sleep_pause_or_collection_change")
         archive.rules.resetContinuity()
         skipNextCPU = true
         latest.removeAll()
@@ -169,6 +176,33 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
         item.button?.title = storageError != nil || warning ? "SD !" : (hasFreshData ? "SD ✓" : "SD ·")
         item.button?.toolTip = summary()
     }
+    private func captureLocalMetrics(_ metrics: [LocalMetric]) -> [LocalMetricReading] {
+        metrics.map { metric in
+            var sample: DiagnosticSample?
+            var value: Double?
+            var limit: TimeInterval = 90
+            let module: String
+            switch metric {
+            case .cpu:
+                module = "CPU"; sample = latest["cpu"]; value = sample?.values["usage"]
+            case .memory:
+                module = "RAM"
+                sample = [latest["memory"], latest["pressure"]].compactMap { $0 }.max { $0.date < $1.date }
+                value = sample?.values["pressure"]
+            case .disk:
+                module = "Disk"; sample = latest["disk"]; limit = 360
+                if let free = sample?.values["free"] { value = free / 1_073_741_824 }
+            }
+            guard !sleeping, !Store.shared.bool(key: "pause", defaultValue: false),
+                  Store.shared.bool(key: "\(module)_state", defaultValue: true),
+                  let source = sample, let reading = value, reading.isFinite,
+                  Date().timeIntervalSince(source.date) >= 0 else {
+                return LocalMetricReading(metric: metric, value: nil, observedAt: nil, freshness: .unavailable)
+            }
+            return LocalMetricReading(metric: metric, value: reading, observedAt: RoundtripJSON.timestamp(source.date),
+                                      freshness: Date().timeIntervalSince(source.date) <= limit ? .fresh : .stale)
+        }
+    }
     private func summary() -> String {
         var parts: [String] = []
         if Store.shared.bool(key: "pause", defaultValue: false) { return "Monitoring paused" }
@@ -195,6 +229,12 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         add("History (7 days)…", #selector(showHistory), to: menu)
         add("Diagnose…", #selector(diagnose), to: menu)
+        if roundtrip == nil {
+            roundtrip = SyntheticRoundtripController(directory: directory) { [weak self] metrics in
+                self?.captureLocalMetrics(metrics) ?? metrics.map { LocalMetricReading(metric: $0, value: nil, observedAt: nil, freshness: .unavailable) }
+            }
+        }
+        roundtrip?.appendMenu(to: menu)
         add("Enable local notifications…", #selector(enableNotifications), to: menu)
         add("Open local history folder", #selector(openFolder), to: menu)
         menu.addItem(.separator())
