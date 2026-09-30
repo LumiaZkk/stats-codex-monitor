@@ -183,7 +183,7 @@ final class SyntheticRoundtripController: NSObject {
         guard !exchangeInFlight, pollingTimer == nil, ![.waiting, .reviewing, .executing].contains(state.phase) else { reviewCurrent(); return }
         do {
             try transition { _ = try $0.create(at: Date()) }
-            generation = UUID(); socketRequestID = nil
+            generation = UUID(); socketRequestID = nil; socketBinding = nil
             socketMessage = "Manual file-test request. Use the secondary file tools to save/import it."
             reviewCurrent()
         } catch { show(error) }
