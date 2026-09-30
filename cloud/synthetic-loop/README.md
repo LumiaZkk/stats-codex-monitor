@@ -6,8 +6,8 @@ This is a protocol prototype, not a completed monitor integration. No telemetry 
 
 - Local signed mock-event roundtrip passes: create fixed request → verified mock callback → read tool → strict proposal write → client result.
 - The private Site is a discovery/read/proposal probe. Its `events/subscribe` returns MCP `Unsupported` (-32014), feature `callbackTransport`, reason `callback_transport_unverified`. It does not accept, store or use callback secrets.
-- Live plugin/event-source discovery and a manual same-dot tool roundtrip were verified on 2026-09-30. Automatic event delivery remains unverified and disabled.
-- The next increment adds explicit signed-in browser file transfer for native synthetic requests; see `TRANSFER.md` for its manual steps and unsigned-file boundary.
+- A separate private foreground runtime using official Secure MCP Tunnel completed a real synthetic roundtrip on 2026-09-30: local trigger → signed event → intended dot wake → request read → strict plan write → local result retrieval with matching hashes. This acceptance does not cover native action execution or persistent operation. See `tunnel/README.md`.
+- Signed-in browser file transfer remains an explicit fallback; see `TRANSFER.md` for its manual steps and unsigned-file boundary. The private runtime also implements the bound native socket contract in `tunnel/NATIVE_SOCKET.md`.
 - There is no native pairing, telemetry upload, persistent Mac agent, model-provider credential, server execute endpoint or shell field. Native offline import/export and separately approved local checks are developed independently.
 
 ## Contract and security
@@ -30,7 +30,7 @@ Verified against [OpenAI MCP Events](https://developers.openai.com/plugins/build
 - Signed callback verification precedes activation; Standard Webhooks HMAC covers ID, timestamp and exact serialized body
 - Delivery IDs survive retries; signing timestamps refresh; 410/413 do not retry; 2xx means receipt, never analysis completion
 
-`bridge/events.mts` implements this contract behind an injected subscription store, access check and hardened transport. Only isolated tests wire it up. The test store is in memory and is not a production persistence implementation. `bridge/node-https.mts` is a portable Node adapter with DNS validation, a pinned connection address, original-host TLS verification, no redirect following, timeouts and response bounds. Its conservative IP policy rejects all IPv6 and special IPv4 ranges. It is excluded from the Workers app and is not a deployed Node service.
+`bridge/events.mts` implements this contract behind an injected subscription store, access check and hardened transport. The private foreground runtime wires it to SQLite subscription/request/outbox storage and verified exclusive personal tunnel access. Isolated tests also use in-memory stores. `bridge/node-https.mts` is a portable Node adapter with DNS validation, a pinned connection address, original-host TLS verification, no redirect following, timeouts and response bounds. Its conservative policy checks every A and AAAA answer, rejects non-public/special ranges, and connects only to a validated A record. It is excluded from the Workers app. The temporary private Node runtime uses this adapter without a public ingress service.
 
 ## Verified hosting gap
 
@@ -67,6 +67,6 @@ Publish only generic contract, tests, migration schema and this documentation. S
 
 ## Minimal-dependency continuation
 
-The selected continuation uses explicit manual invocation in the existing dot conversation and signed-in browser import/export. It does not require a new callback host. Automatic event delivery remains out of scope for this increment. See `TRANSFER.md`.
+The automatic synthetic route uses the official Secure MCP Tunnel client in a temporary foreground process. Its local socket supports the native request/result contract without additional credentials in the app. Signed-in browser import/export remains a manual fallback; see `TRANSFER.md`. The app integration and explicit local approval/receipt remain separate acceptance gates.
 
 The public package contains runtime-dependency-free contracts, fixtures, tests and generic Sites adapters under `site/`. Type definitions are development-only dependencies. Dedicated Synthetic bridge CI covers Node tests/type-checks; the existing macOS archive job does not substitute for those checks.

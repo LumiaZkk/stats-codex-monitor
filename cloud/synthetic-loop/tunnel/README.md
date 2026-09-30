@@ -4,6 +4,11 @@ This is a bounded technical spike for official Secure MCP Tunnel. It accepts a
 fixed synthetic fixture, returns dry-run proposals and has **no native execution
 endpoint**. The native app's approved-action/receipt integration is still separate.
 
+A real synthetic transport acceptance on 2026-09-30 verified local trigger → signed
+event → intended dot wake → exact request read → dry-run proposal write → local
+result retrieval with independent matching hashes. This does not verify native
+execution or unattended persistent operation.
+
 ## Boundary and prerequisites
 
 - One verified personal account, one private tunnel, exactly one associated
@@ -104,6 +109,10 @@ node tunnel/client.mts <private-run-directory> cancel <request-id>
 The Unix socket is inside an owner-only directory and has mode 0600. Its only
 operations create the fixed fixture, retrieve a result or cancel it. No caller
 can send metrics, paths, process IDs, shell commands or executable actions.
+
+The native app uses the versioned [native socket contract](NATIVE_SOCKET.md) to
+submit its existing synthetic envelope and receive the same canonical result
+bundle as offline import. The original CLI commands remain supported.
 
 SQLite stores immutable requests/proposals, finite subscriptions and a bounded
 delivery outbox. Subscription signing secrets remain in the private test directory

@@ -63,13 +63,13 @@ export function canonical(value: unknown): string {
 export const digest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex');
 export type Plan = { schema_version: 1; request_id: string; request_hash: string; plan_id: string; expires_at: string; dry_run: true; summary: string; actions: Array<{ type: 'open_activity_monitor'; target: 'current_device'; dry_run: true } | { type: 'observe_metrics'; metrics: string[]; duration_seconds: number; dry_run: true }> };
 export type NativeTransferRequest = { schema_version: 1; kind: 'stats_synthetic_request'; client_request_id: string; fixture: 'high-cpu-v1'; created_at: string; expires_at: string; client_request_hash: string };
-export function validateNativeRequest(value: unknown, now: number): asserts value is NativeTransferRequest {
+export function validateNativeRequest(value: unknown, now: number, options: { allowExpired?: boolean } = {}): asserts value is NativeTransferRequest {
   validate(nativeRequestSchema, value);
   const request = value as NativeTransferRequest;
   const { client_request_hash, ...body } = request;
   if (digest(body) !== client_request_hash) throw new Fault('client_request_hash_mismatch', 409);
   const created = Date.parse(request.created_at), expires = Date.parse(request.expires_at);
-  if (!Number.isFinite(created) || !Number.isFinite(expires) || new Date(created).toISOString() !== request.created_at || new Date(expires).toISOString() !== request.expires_at || created > now + 120_000 || expires <= now || expires <= created || expires - created > 30 * 60_000) throw new Fault('invalid_transfer_expiry');
+  if (!Number.isFinite(created) || !Number.isFinite(expires) || new Date(created).toISOString() !== request.created_at || new Date(expires).toISOString() !== request.expires_at || created > now + 120_000 || (!options.allowExpired && expires <= now) || expires <= created || expires - created > 30 * 60_000) throw new Fault('invalid_transfer_expiry');
 }
 export type DiagnosticRequest = { schema_version: 1; request_id: string; stream_id: string; fixture: 'high-cpu-v1'; synthetic: true; snapshot: typeof FIXTURE; created_at: string; expires_at: string; client_request?: NativeTransferRequest };
 export type RecordRow = { owner: string; idempotencyKey: string; request: DiagnosticRequest; requestHash: string; eventId: string; cancelled: boolean; plan: Plan | null; planHash: string | null };

@@ -50,7 +50,7 @@ test('real SQLite runtime persists bounded subscriptions, dry-run plans and deli
   const post=async(_u:string,b:string)=>{const p=JSON.parse(b);if(p.type==='verification')return{status:200,body:JSON.stringify({challenge:p.challenge})};sent++;return{status:202,body:'{}'};};
   try{
     let runtime=new SyntheticRuntime(store,access,post);const input={op:'diagnose',idempotency_key:randomUUID()};
-    const created=await runtime.local(input);assert.equal(created.request.synthetic,true);
+    const created=await runtime.local(input);assert.ok('request' in created);assert.equal(created.request.synthetic,true);
     const sub=await runtime.events.subscribe(access(),{name:'diagnostic.requested',arguments:{stream_id:'synthetic-smoke-v1'},delivery:{mode:'webhook',url:'https://fixture.invalid/callback',secret:'whsec_'+Buffer.alloc(32,9).toString('base64')},ttlMs:60_000});
     await runtime.pump();assert.equal(sent,1);await runtime.pump();assert.equal(sent,1);
     store.close();store=new RuntimeStore(join(dir,'state.sqlite'));runtime=new SyntheticRuntime(store,access,post);
@@ -58,7 +58,7 @@ test('real SQLite runtime persists bounded subscriptions, dry-run plans and deli
     const plan={schema_version:1,request_id:created.request.request_id,request_hash:created.request_hash,plan_id:randomUUID(),expires_at:created.request.expires_at,dry_run:true,summary:'Synthetic only',actions:[{type:'open_activity_monitor',target:'current_device',dry_run:true}]};
     await runtime.bridge.submit(access(),plan);assert.equal((await runtime.local({op:'result',request_id:plan.request_id})).status,'proposed');
     await assert.rejects(runtime.local({...input,telemetry:{cpu:1}}));await assert.rejects(runtime.local({op:'execute',command:'anything'}));
-    await runtime.local({op:'cancel',request_id:plan.request_id});assert.equal((await runtime.local({op:'result',request_id:plan.request_id})).proposal,null);
+    await runtime.local({op:'cancel',request_id:plan.request_id});const cancelled=await runtime.local({op:'result',request_id:plan.request_id});assert.ok('proposal' in cancelled);assert.equal(cancelled.proposal,null);
     allowed=false;await assert.rejects(runtime.mcp({jsonrpc:'2.0',id:1,method:'tools/list'}));await runtime.pump();assert.equal(sent,1);
     privateFile(join(dir,'state.sqlite'));chmodSync(join(dir,'state.sqlite'),0o644);assert.throws(()=>privateFile(join(dir,'state.sqlite')));
   }finally{store.close();rmSync(dir,{recursive:true,force:true});}

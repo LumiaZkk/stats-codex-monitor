@@ -14,6 +14,7 @@ import { RuntimeStore, privateFile } from './stores.mts';
 import { callbackTransport } from './resolver.mts';
 import type { CallbackResolver } from './resolver.mts';
 import { consumeStdio } from './stdio-input.mts';
+import { LocalRequestFrame, NATIVE_OPS, nativeLocal, localResultFrame } from './native-protocol.mts';
 
 export class SyntheticRuntime {
   store: RuntimeStore; bridge: Bridge; events: Events; access: () => string; busy = false; resolver: CallbackResolver;
@@ -54,6 +55,11 @@ export class SyntheticRuntime {
   }
   async local(value: unknown) {
     const p = value as { op?: string; idempotency_key?: string; request_id?: string };
+    if(NATIVE_OPS.includes(p?.op as typeof NATIVE_OPS[number])){
+      const result=await nativeLocal(this.bridge,this.store,this.access(),value);
+      if(p.op==='diagnose_native' && result.status==='requested')setImmediate(()=>void this.pump());
+      return result;
+    }
     if (p?.op === 'diagnose') {
       validate(object({ op: { const: 'diagnose' }, idempotency_key: createSchema.properties!.idempotency_key }), value);
       return this.create({ idempotency_key:p.idempotency_key, fixture:'high-cpu-v1' });
@@ -78,13 +84,14 @@ export async function serve(dir: string) {
     await new Promise<void>((resolve,reject)=>{const probe=connect(socketPath);probe.setTimeout(500,()=>{probe.destroy();reject(new Fault('socket_busy'));});probe.once('connect',()=>{probe.destroy();reject(new Fault('socket_busy'));});probe.once('error',e=>{if((e as NodeJS.ErrnoException).code==='ECONNREFUSED'){unlinkSync(socketPath);resolve();}else reject(new Fault('socket_unavailable'));});});
   }
   const server = createServer(socket => {
-    socket.setTimeout(5000,() => socket.destroy()); socket.setEncoding('utf8'); let text = '', used = false;
+    const deadline=setTimeout(()=>socket.destroy(),5000);deadline.unref();socket.once('close',()=>clearTimeout(deadline));socket.setEncoding('utf8');
+    const frame=new LocalRequestFrame();
     socket.on('data',async chunk => {
-      if (used) return; text += chunk;
-      if (Buffer.byteLength(text) > 16_384) { used = true; socket.destroy(); return; }
-      if (!text.includes('\n')) return; used = true;
-      try { const response = await runtime.local(parseStrictJson(text.trim())); socket.end(JSON.stringify({result:response})+'\n'); }
-      catch (e) { socket.end(JSON.stringify({error:e instanceof Fault ? e.reason : 'request_rejected'})+'\n'); }
+      let input:{value:unknown}|null;
+      try {input=frame.push(chunk.toString());}catch {socket.destroy();return;}
+      if(!input)return;
+      try { const response = await runtime.local(input.value); if(!socket.destroyed)socket.end(localResultFrame(response)); }
+      catch (e) { if(!socket.destroyed)socket.end(JSON.stringify({error:e instanceof Fault ? e.reason : 'request_rejected'})+'\n'); }
     });
     socket.on('error',() => {});
   });
