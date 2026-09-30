@@ -112,7 +112,14 @@ checks access and request state on each attempt. Repeats use the same event ID;
 HTTP acknowledgement is distinct from analysis completion. A cancelled/in-flight
 callback cannot be recalled, but subsequent reads/plans remain guarded.
 
-Ctrl-C, access-check failure, or the **one-hour maximum** stops the foreground
+Ctrl-C, Terminal hangup, access-check failure, or the **one-hour maximum** stops the foreground
 client and removes temporary runtime state/subscription secrets. No real data is
 uploaded. This test does not itself install the native app or fulfill its separate
 local approval/execution/receipt acceptance step.
+
+The client is not detached from its Terminal. The server independently checks its
+lease every second and exits when it expires; the official client's stdio EOF
+handling then stops its daemon even if the runner was killed. An uncatchable
+process kill or OS crash can leave an owner-only temporary directory behind;
+inspect and remove that specific test directory after all test processes stop.
+No runtime API key is in it, but it can contain the temporary subscription secrets.

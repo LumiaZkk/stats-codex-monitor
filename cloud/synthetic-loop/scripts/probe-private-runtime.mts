@@ -34,7 +34,8 @@ try{
   const proposed=await call('tools/call',{name:'submit_diagnostic_plan',arguments:{schema_version:1,request_id:created.request.request_id,request_hash:created.request_hash,plan_id:randomUUID(),expires_at:created.request.expires_at,dry_run:true,summary:'Isolated private transport probe.',actions:[{type:'open_activity_monitor',target:'current_device',dry_run:true}]}});assert.equal(proposed.result?.structuredContent.status,'proposed');
   const returned=await local({op:'result',request_id:created.request.request_id});assert.equal(returned.proposal_hash,proposed.result?.structuredContent.proposal_hash);
   assert.equal((await local({op:'cancel',request_id:created.request.request_id})).status,'cancelled');
-  await writeFile(join(dir,'access.json'),JSON.stringify({...lease,valid_until:Date.now()-1}),{mode:0o600});assert.equal((await call('tools/list')).error?.message,'access_lease_expired');
+  await writeFile(join(dir,'access.json'),JSON.stringify({...lease,valid_until:Date.now()-1}),{mode:0o600});
+  let rejected=false;try{rejected=Boolean((await call('tools/list')).error);}catch{rejected=true;}assert(rejected,'Expired access must reject calls or close the transport');
   process.stdout.write(JSON.stringify({private_local_socket_roundtrip:'passed',official_mcp_transport:'passed',invalid_callback_rejected:true,expired_access_rejected:true,hosted_tunnel:'not_tested',current_dot_wake:'not_tested',native_execution:'not_tested'})+'\n');
 }finally{
   process.removeListener('SIGINT',cancel);process.removeListener('SIGTERM',cancel);

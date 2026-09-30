@@ -18,7 +18,7 @@ export class SyntheticRuntime {
     this.store = store; this.access = access; this.bridge = new Bridge(store.requests);
     this.events = new Events(store.subscriptions, post, async owner => { try { return access() === owner; } catch { return false; } });
   }
-  async create(input: unknown) { validate(createSchema,input); const owner=this.access(); this.store.checkCapacity(owner,(input as {idempotency_key:string}).idempotency_key); const result = await this.bridge.create(owner, input); void this.pump(); return result; }
+  async create(input: unknown) { const result = await this.bridge.create(this.access(), input); void this.pump(); return result; }
   async pump() {
     if (this.busy) return; this.busy = true;
     try {
@@ -28,7 +28,7 @@ export class SyntheticRuntime {
         for (const sub of this.store.active(owner)) {
           if (!this.store.begin(event.eventId,sub.id)) continue;
           try { await this.events.deliver(owner,sub.id,event,async () => this.access() === owner && (await this.bridge.read(owner,id)).status === 'requested'); this.store.acknowledge(event.eventId,sub.id); }
-          catch { /* Bounded persisted outbox rounds; no callback URL, payload or secret logged. */ }
+          catch (e) { if(e instanceof Fault && ['callback_rejected','callback_gone','subscription_not_found','subscription_inactive','request_terminal','event_filter_mismatch'].includes(e.reason))this.store.reject(event.eventId,sub.id); /* No callback URL, payload or secret logged. */ }
         }
       }
     } catch { /* Expired access stops delivery. */ }
@@ -37,7 +37,6 @@ export class SyntheticRuntime {
   async mcp(value: unknown) {
     const owner = this.access();
     const input = value as { method?: string; params?: { name?: string; arguments?: unknown } };
-    if (input?.method === 'tools/call' && input.params?.name === 'create_synthetic_request') {validate(createSchema,input.params.arguments);this.store.checkCapacity(owner,(input.params.arguments as {idempotency_key:string}).idempotency_key);}
     const result = await rpc(this.bridge,owner,value,this.events);
     if ('result' in result && result.result && typeof result.result === 'object') {
       if (input.method === 'events/list') (result.result as { events: { description: string }[] }).events[0].description = 'A fixed synthetic diagnostic fixture was created on the private local test runtime. No real metrics or native commands.';
@@ -86,6 +85,9 @@ export async function serve(dir: string) {
     socket.on('error',() => {});
   });
   await new Promise<void>((resolve,reject) => { server.once('error',reject); server.listen(socketPath,resolve); }); chmodSync(socketPath,0o600);
+  // Independent lease watchdog: if the runner dies, close stdio on expiry. The
+  // official client's stdio EOF handling then shuts down its credentialed daemon.
+  const watchdog=setInterval(()=>{try{access();}catch{process.stderr.write('Private runtime access expired.\n');process.exit(1);}},1000);watchdog.unref();
   const timer = setInterval(() => void runtime.pump(),30_000); timer.unref();
   let input = ''; process.stdin.setEncoding('utf8');
   try {
@@ -99,5 +101,5 @@ export async function serve(dir: string) {
         catch (e) { if (!notify) process.stdout.write(JSON.stringify({jsonrpc:'2.0',id,error:{code:-32001,message:e instanceof Fault ? e.reason : 'request_rejected'}})+'\n'); }
       }
     }
-  } finally { clearInterval(timer); server.close(); store.close(); }
+  } finally { clearInterval(timer); clearInterval(watchdog); server.close(); store.close(); }
 }

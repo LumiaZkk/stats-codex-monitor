@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { RuntimeStore,privateFile } from '../tunnel/stores.mts';
 import { SyntheticRuntime } from '../tunnel/server.mts';
 import { leasePrincipal,verifyMetadata } from '../tunnel/identity.mts';
+import { makeNativeFixture } from '../bridge/transfer.mts';
 const scope={mode:'exclusive_personal_synthetic' as const,tunnel_id:'tunnel_'+'a'.repeat(32),organization_id:'org-test',workspace_id:'11111111-1111-4111-8111-111111111111'};
 test('exclusive boundary rejects broadened, wrong or expired tunnel metadata',()=>{
   const metadata={id:scope.tunnel_id,organization_ids:[scope.organization_id],workspace_ids:[scope.workspace_id]};
@@ -16,6 +17,26 @@ test('exclusive boundary rejects broadened, wrong or expired tunnel metadata',()
   assert.match(leasePrincipal(lease),/^exclusive-tunnel:/);
   assert.throws(()=>leasePrincipal({...lease,valid_until:now-1}));
   assert.throws(()=>leasePrincipal({...lease,valid_until:now+90_001}));
+});
+test('terminal callback rejection is not retried by persisted outbox rounds',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'stats-terminal-test-'));chmodSync(dir,0o700);const store=new RuntimeStore(join(dir,'state.sqlite'));let sends=0;
+  const access=()=> 'isolated-terminal-test';const runtime=new SyntheticRuntime(store,access,async(_u,b)=>{const p=JSON.parse(b);if(p.type==='verification')return{status:200,body:JSON.stringify({challenge:p.challenge})};sends++;return{status:413,body:'{}'};});
+  try{
+    await runtime.bridge.create(access(),{idempotency_key:randomUUID(),fixture:'high-cpu-v1'});
+    await runtime.events.subscribe(access(),{name:'diagnostic.requested',arguments:{stream_id:'synthetic-smoke-v1'},delivery:{mode:'webhook',url:'https://fixture.invalid/callback',secret:'whsec_'+Buffer.alloc(32,9).toString('base64')}});
+    await runtime.pump();await runtime.pump();assert.equal(sends,1);
+  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('all insertion paths share the capacity bound while existing idempotent requests remain readable',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'stats-capacity-test-'));chmodSync(dir,0o700);const store=new RuntimeStore(join(dir,'state.sqlite'));const runtime=new SyntheticRuntime(store,()=> 'isolated-capacity-test');
+  try{
+    const first={idempotency_key:randomUUID(),fixture:'high-cpu-v1'};const r=await runtime.bridge.create(runtime.access(),first);
+    for(let i=1;i<100;i++)await runtime.bridge.create(runtime.access(),{idempotency_key:randomUUID(),fixture:'high-cpu-v1'});
+    assert.equal((await runtime.bridge.create(runtime.access(),first)).request_hash,r.request_hash);
+    const now=Date.now(),file=makeNativeFixture(new Date(now).toISOString(),new Date(now+60_000).toISOString(),randomUUID());
+    const response=await runtime.mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'import_synthetic_request',arguments:file}});
+    assert.equal(response.error?.message,'request_limit');assert.equal(store.db.prepare('SELECT count(*) AS n FROM diagnostic_requests').get()!.n,100);
+  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
 test('real SQLite runtime persists bounded subscriptions, dry-run plans and delivery dedup',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'stats-runtime-test-'));chmodSync(dir,0o700);

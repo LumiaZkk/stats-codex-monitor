@@ -8,10 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { parseStrictJson } from '../bridge/json.mts';
 import { validateScope, verifyMetadata } from './identity.mts';
 import type { Scope } from './identity.mts';
+import { privateFile } from './stores.mts';
 
 process.umask(0o077);
 const [binaryArgument,scopePath] = process.argv.slice(2);
 if (!binaryArgument || !scopePath) throw new Error('Pass verified official binary and approved scope JSON paths.');
+privateFile(scopePath);
 const binary = resolve(binaryArgument), scope = parseStrictJson(await readFile(scopePath,'utf8')) as Scope;
 validateScope(scope);
 const key = process.env.CONTROL_PLANE_API_KEY;
@@ -27,7 +29,7 @@ const runUntil = Date.now()+3_600_000;
 let client: ReturnType<typeof spawn> | undefined, interval: ReturnType<typeof setInterval> | undefined, deadline: ReturnType<typeof setTimeout> | undefined, stopped = false, checking = false, stopping: Promise<void> | undefined, stage = 'client_version';
 const cancelled = new AbortController();
 function cancel() { cancelled.abort(); }
-process.once('SIGINT',cancel); process.once('SIGTERM',cancel);
+process.once('SIGINT',cancel); process.once('SIGTERM',cancel); process.once('SIGHUP',cancel);
 async function verify() {
   const {stdout} = await exec(binary,['admin','--json','--control-plane.base-url','https://api.openai.com','tunnels','get',scope.tunnel_id],{env:secretEnv,timeout:35_000,maxBuffer:65_536,signal:cancelled.signal});
   verifyMetadata(scope,parseStrictJson(stdout));
@@ -40,7 +42,7 @@ function stop(): Promise<void> {
   stopped=true; stopping=(async()=>{clearInterval(interval); clearTimeout(deadline);
   await rm(join(runDir,'access.json'),{force:true});
   if (client?.pid && client.exitCode === null && client.signalCode === null) {
-    const signal = (s: NodeJS.Signals) => { try { if(process.platform !== 'win32') process.kill(-client!.pid!,s); else client!.kill(s); } catch (e) { if((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; } };
+    const signal = (s: NodeJS.Signals) => { try { client!.kill(s); } catch (e) { if((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; } };
     const exited = new Promise(r => client!.once('exit',r)); signal('SIGTERM');
     await Promise.race([exited,new Promise(r=>setTimeout(r,2000))]);
     if(client.exitCode === null && client.signalCode === null) { signal('SIGKILL'); await Promise.race([exited,new Promise(r=>setTimeout(r,1000))]); }
@@ -58,7 +60,7 @@ try {
   // Do not print doctor stderr/stdout: failure diagnostics must never expose a key.
   stage='doctor'; await exec(binary,['doctor',...args,'--explain'],{env:secretEnv,timeout:45_000,maxBuffer:65_536,signal:cancelled.signal});
   cancelled.signal.throwIfAborted(); stage='running_client';
-  client = spawn(binary,['run',...args],{env:secretEnv,stdio:['ignore','ignore','ignore'],detached:process.platform !== 'win32'});
+  client = spawn(binary,['run',...args],{env:secretEnv,stdio:['ignore','ignore','ignore']});
   const exited = new Promise<void>((res,rej)=>{ client!.once('error',rej); client!.once('exit',code=>code === 0 || cancelled.signal.aborted ? res() : rej(new Error('client_stopped'))); });
   interval=setInterval(()=>{ if(checking || stopped)return; checking=true; void verify().catch(()=>{process.stderr.write('Tunnel access changed or expired; stopping safely.\n');cancel();}).finally(()=>{checking=false;});},30_000);
   deadline=setTimeout(cancel,Math.max(0,runUntil-Date.now()));
@@ -66,4 +68,4 @@ try {
   process.stdout.write('Keep this terminal open. Ctrl-C stops the test and removes temporary credentials/subscriptions.\n');
   await exited;
 } catch { process.stderr.write(`Tunnel test stopped at ${stage}. Verify the narrow runtime scope and local readiness. No key was logged.\n`); process.exitCode=1; }
-finally { await stop(); process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel); }
+finally { await stop(); process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel); process.removeListener('SIGHUP',cancel); }
