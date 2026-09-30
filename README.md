@@ -6,7 +6,7 @@ CPU, memory, swap and startup-disk monitoring stay on your Mac. Open **SD → Di
 
 **Status: experimental source preview, version 0.1.0.** Cloud source checks have been run. A full macOS build, UI validation, and resource-use measurements are still required before calling this a working release. No prebuilt/notarized release is provided yet.
 
-[简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
+[Synthetic native roundtrip preview](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
 
 ## What this adds
 
