@@ -7,10 +7,20 @@ export type SafePost = (url: string, body: string, headers: Record<string, strin
 // body, request fields or arbitrary exception messages in diagnostic state.
 const safeReasons = ['invalid_event','invalid_schema','invalid_callback','invalid_signing_secret','invalid_ttl','replay_unsupported','access_revoked','authentication_required','non_public_callback','callback_transport_unverified','callback_timeout','callback_dns_failed','callback_tls_failed','callback_connection_failed','callback_transport_error','callback_http_error','invalid_challenge_response','challenge_failed','subscription_limit'] as const;
 type SafeReason = typeof safeReasons[number] | 'subscription_failed';
-export type SubscriptionDiagnostic = { stage: 'validating' | 'verifying' | 'storing' | 'accepted' | 'failed'; reason?: SafeReason; http_status?: number };
+const addressCategories = ['public_ipv4','non_public_ipv4','benchmark_ipv4','unsupported_ipv6','invalid_address'] as const;
+export type AddressCategories = Record<typeof addressCategories[number],number>;
+export class CallbackAddressFault extends Fault {
+  readonly addressCategories: AddressCategories;
+  constructor(counts: AddressCategories) {
+    super('non_public_callback',503,-32015);
+    this.addressCategories = Object.freeze(Object.fromEntries(addressCategories.map(k=>[k,Number.isSafeInteger(counts[k]) && counts[k]>=0 ? Math.min(counts[k],1000) : 0])) as AddressCategories);
+  }
+}
+export type SubscriptionDiagnostic = { stage: 'validating' | 'verifying' | 'storing' | 'accepted' | 'failed'; reason?: SafeReason; http_status?: number; address_categories?: AddressCategories };
 function safeReason(error: unknown): SafeReason { return error instanceof Fault && (safeReasons as readonly string[]).includes(error.reason) ? error.reason as SafeReason : 'subscription_failed'; }
 export function callbackFault(error: unknown): Fault {
-  if (error instanceof Fault && ['invalid_callback','non_public_callback','callback_transport_unverified','callback_timeout'].includes(error.reason)) return new Fault(error.reason,503,-32015);
+  if (error instanceof CallbackAddressFault) return error;
+  if (error instanceof Fault && ['invalid_callback','non_public_callback','callback_transport_unverified','callback_timeout','callback_dns_failed','callback_tls_failed','callback_connection_failed','callback_transport_error'].includes(error.reason)) return new Fault(error.reason,503,-32015);
   const code = (error as { code?: unknown })?.code;
   const reason = ['ABORT_ERR','ETIMEDOUT'].includes(String(code)) || (error as { name?: unknown })?.name === 'TimeoutError' ? 'callback_timeout'
     : ['ENOTFOUND','EAI_AGAIN'].includes(String(code)) ? 'callback_dns_failed'
@@ -55,7 +65,7 @@ export class Events {
   async subscribe(owner: string, value: unknown) {
     this.lastSubscription = { stage:'validating' };
     try { return await this.subscribeValidated(owner,value); }
-    catch (error) { this.lastSubscription = { stage:'failed', reason:safeReason(error), ...(this.lastSubscription.http_status === undefined ? {} : {http_status:this.lastSubscription.http_status}) }; throw error; }
+    catch (error) { this.lastSubscription = { stage:'failed', reason:safeReason(error), ...(this.lastSubscription.http_status === undefined ? {} : {http_status:this.lastSubscription.http_status}), ...(error instanceof CallbackAddressFault ? {address_categories:error.addressCategories} : {}) }; throw error; }
   }
   private async subscribeValidated(owner: string, value: unknown) {
     const { p, url, id } = await this.identity(owner, value, true); const now = this.clock();

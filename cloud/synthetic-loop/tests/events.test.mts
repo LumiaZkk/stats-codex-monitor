@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Events, signingKey } from '../bridge/events.mts';
+import { CallbackAddressFault, Events, signingKey } from '../bridge/events.mts';
 import type { Subscription, SafePost } from '../bridge/events.mts';
 import { Bridge, Fault, EVENT_NAME, STREAM_ID } from '../bridge/core.mts';
 import { MemoryStore } from '../bridge/memory-store.mts';
@@ -55,6 +55,8 @@ test('410, 413, cancellation and expiration never retry', async () => {
 test('subscription diagnostics expose only categorized failures, never request or response secrets', async () => {
   const cases: [unknown,string][] = [
     [new Fault('non_public_callback'),'non_public_callback'],
+    [new Fault('callback_dns_failed'),'callback_dns_failed'],
+    [new Fault('callback_tls_failed'),'callback_tls_failed'],
     [Object.assign(new Error(params.delivery.url+secret),{code:'ENOTFOUND'}),'callback_dns_failed'],
     [Object.assign(new Error(secret),{code:'ABORT_ERR'}),'callback_timeout'],
     [Object.assign(new Error(secret),{code:'ERR_TLS_CERT_ALTNAME_INVALID'}),'callback_tls_failed'],
@@ -76,4 +78,13 @@ test('HTTP, malformed JSON, mismatch and successful verification have distinct s
   const s=setup();await s.events.subscribe('a',params);assert.deepEqual(s.events.lastSubscription,{stage:'accepted',http_status:200});
   await s.events.unsubscribe('a',params);assert.equal(s.subscriptions.size,0);assert.equal(s.events.lastSubscription?.stage,'accepted'); // Outcome evidence is retained after rollback, not an active-count claim.
   await assert.rejects(s.events.subscribe('a',{...params,delivery:{...params.delivery,secret:'bad'}}));assert.deepEqual(s.events.lastSubscription,{stage:'failed',reason:'invalid_signing_secret'});
+});
+test('address-policy diagnostics retain bounded category counts without address or hostname data', async () => {
+  const counts={public_ipv4:1,non_public_ipv4:2,benchmark_ipv4:1,unsupported_ipv6:3,invalid_address:0};
+  const e=new CallbackAddressFault({...counts,hostname:'private.invalid',address:'198.18.1.1'} as typeof counts);
+  const s=setup(async()=>{throw e;});await assert.rejects(s.events.subscribe('a',params));
+  assert.deepEqual(s.events.lastSubscription,{stage:'failed',reason:'non_public_callback',address_categories:counts});
+  assert.ok(!JSON.stringify(s.events.lastSubscription).includes('private.invalid'));assert.ok(!JSON.stringify(s.events.lastSubscription).includes('198.18.1.1'));
+  assert.equal(new CallbackAddressFault({...counts,public_ipv4:99999,non_public_ipv4:-1}).addressCategories.public_ipv4,1000);
+  assert.equal(new CallbackAddressFault({...counts,non_public_ipv4:-1}).addressCategories.non_public_ipv4,0);
 });

@@ -11,10 +11,14 @@ import { rpc } from '../bridge/mcp.mts';
 import { parseStrictJson } from '../bridge/json.mts';
 import { leasePrincipal } from './identity.mts';
 import { RuntimeStore, privateFile } from './stores.mts';
+import { callbackTransport } from './resolver.mts';
+import type { CallbackResolver } from './resolver.mts';
+import { consumeStdio } from './stdio-input.mts';
 
 export class SyntheticRuntime {
-  store: RuntimeStore; bridge: Bridge; events: Events; access: () => string; busy = false;
-  constructor(store: RuntimeStore, access: () => string, post: SafePost = pinnedHttpsPost) {
+  store: RuntimeStore; bridge: Bridge; events: Events; access: () => string; busy = false; resolver: CallbackResolver;
+  constructor(store: RuntimeStore, access: () => string, post: SafePost = pinnedHttpsPost, resolver: CallbackResolver = 'system') {
+    this.resolver=resolver;
     this.store = store; this.access = access; this.bridge = new Bridge(store.requests);
     this.events = new Events(store.subscriptions, post, async owner => { try { return access() === owner; } catch { return false; } });
   }
@@ -41,7 +45,7 @@ export class SyntheticRuntime {
     if ('result' in result && result.result && typeof result.result === 'object') {
       if (input.method === 'events/list') (result.result as { events: { description: string }[] }).events[0].description = 'A fixed synthetic diagnostic fixture was created on the private local test runtime. No real metrics or native commands.';
       if (input.method === 'tools/call' && input.params?.name === 'get_bridge_status') {
-        const data = { synthetic_only: true, identity_boundary: 'exclusive_personal_tunnel', callback_delivery: this.store.active(owner).length ? 'verified_subscription' : 'awaiting_subscription', last_subscription_attempt: this.events.lastSubscription, same_dot_roundtrip: 'not_verified', native_execution: 'not_supported', transfer_mode: 'private_local_socket', observed_methods: await this.store.requests.methods(owner) };
+        const data = { synthetic_only: true, identity_boundary: 'exclusive_personal_tunnel', callback_resolver:this.resolver, callback_delivery: this.store.active(owner).length ? 'verified_subscription' : 'awaiting_subscription', last_subscription_attempt: this.events.lastSubscription, same_dot_roundtrip: 'not_verified', native_execution: 'not_supported', transfer_mode: 'private_local_socket', observed_methods: await this.store.requests.methods(owner) };
         result.result = { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: false };
       }
     }
@@ -67,7 +71,7 @@ export async function serve(dir: string) {
   // API key stays with the official client/runner. This server never uses it.
   delete process.env.CONTROL_PLANE_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.OPENAI_ADMIN_KEY;
   const access = () => { const p = join(dir,'access.json'); privateFile(p); return leasePrincipal(parseStrictJson(readFileSync(p,'utf8'))); };
-  access(); const store = new RuntimeStore(join(dir,'state.sqlite')); const runtime = new SyntheticRuntime(store,access);
+  access(); const callbackLifetime=new AbortController(); const transport=callbackTransport(process.env.STATS_CALLBACK_RESOLVER,callbackLifetime.signal); const store = new RuntimeStore(join(dir,'state.sqlite')); const runtime = new SyntheticRuntime(store,access,transport.post,transport.mode);
   const socketPath = join(dir,'native.sock');
   if(existsSync(socketPath)) {
     const s=lstatSync(socketPath);if(!s.isSocket() || (s.mode & 0o077)!==0 || (process.getuid && s.uid!==process.getuid()))throw new Fault('unsafe_socket_path');
@@ -89,17 +93,11 @@ export async function serve(dir: string) {
   // official client's stdio EOF handling then shuts down its credentialed daemon.
   const watchdog=setInterval(()=>{try{access();}catch{process.stderr.write('Private runtime access expired.\n');process.exit(1);}},1000);watchdog.unref();
   const timer = setInterval(() => void runtime.pump(),30_000); timer.unref();
-  let input = ''; process.stdin.setEncoding('utf8');
   try {
-    for await (const chunk of process.stdin) {
-      input += chunk;
-      if (Buffer.byteLength(input) > 16_384) throw new Fault('message_too_large');
-      while (input.includes('\n')) {
-        const at = input.indexOf('\n'), line = input.slice(0,at); input = input.slice(at+1); if (!line.trim()) continue;
-        let id: unknown = null, notify = false;
-        try { const request = parseStrictJson(line) as { id?: unknown }; notify = !Object.hasOwn(request,'id'); id = request.id ?? null; const response = await runtime.mcp(request); if (!notify) process.stdout.write(JSON.stringify(response)+'\n'); }
-        catch (e) { if (!notify) process.stdout.write(JSON.stringify({jsonrpc:'2.0',id,error:{code:-32001,message:e instanceof Fault ? e.reason : 'request_rejected'}})+'\n'); }
-      }
-    }
-  } finally { clearInterval(timer); clearInterval(watchdog); server.close(); store.close(); }
+    await consumeStdio(process.stdin,async line=>{
+      let id: unknown = null, notify = false;
+      try { const request = parseStrictJson(line) as { id?: unknown }; notify = !Object.hasOwn(request,'id'); id = request.id ?? null; const response = await runtime.mcp(request); if (!notify && !callbackLifetime.signal.aborted) process.stdout.write(JSON.stringify(response)+'\n'); }
+      catch (e) { if (!notify && !callbackLifetime.signal.aborted) process.stdout.write(JSON.stringify({jsonrpc:'2.0',id,error:{code:-32001,message:e instanceof Fault ? e.reason : 'request_rejected'}})+'\n'); }
+    },callbackLifetime);
+  } finally { callbackLifetime.abort(); clearInterval(timer); clearInterval(watchdog); server.close(); store.close(); }
 }

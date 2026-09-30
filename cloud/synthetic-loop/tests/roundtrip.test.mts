@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import https from 'node:https';
 import { randomUUID, createHmac } from 'node:crypto';
 import { Bridge, STREAM_ID, EVENT_NAME, digest, validate, planSchema } from '../bridge/core.mts';
 import type { Plan } from '../bridge/core.mts';
@@ -7,7 +8,7 @@ import { MemoryStore } from '../bridge/memory-store.mts';
 import { rpc, TOOLS } from '../bridge/mcp.mts';
 import { Events, signingKey } from '../bridge/events.mts';
 import type { Subscription } from '../bridge/events.mts';
-import { publicIPv4 } from '../bridge/node-https.mts';
+import { classifyAddresses, makePinnedHttpsPost, publicIPv4 } from '../bridge/node-https.mts';
 const A = 'test-owner-a', B = 'test-owner-b';
 const now = Date.parse('2026-09-30T08:00:00.000Z');
 const fixture = () => ({ idempotency_key: randomUUID(), fixture: 'high-cpu-v1' });
@@ -75,4 +76,25 @@ test('MCP discovery, auth and hosted callback gate accurately report readiness',
 test('callback classifier rejects local, special, multicast, documentation and all IPv6', () => {
   for (const address of ['127.0.0.1','10.0.0.1','169.254.169.254','172.16.0.1','192.168.1.1','100.64.0.1','198.18.0.1','192.0.2.1','198.51.100.1','203.0.113.1','224.0.0.1','255.255.255.255','::1','::ffff:127.0.0.1','2001:4860:4860::8888']) assert.equal(publicIPv4(address), false, address);
   assert.equal(publicIPv4('8.8.8.8'), true);
+});
+test('DNS categories distinguish unsupported IPv6 from blocked and benchmark IPv4 without weakening rejection', () => {
+  assert.deepEqual(classifyAddresses([{address:'8.8.8.8',family:4},{address:'198.18.1.1',family:4},{address:'127.0.0.1',family:4},{address:'2001:4860:4860::8888',family:6},{address:'::1',family:6},{address:'invalid',family:4}]),{public_ipv4:1,non_public_ipv4:2,benchmark_ipv4:1,unsupported_ipv6:2,invalid_address:1});
+  assert.deepEqual(classifyAddresses([]),{public_ipv4:0,non_public_ipv4:0,benchmark_ipv4:0,unsupported_ipv6:0,invalid_address:0});
+});
+test('a custom resolver receives hostname only and cannot bypass whole-answer public-address rejection',async()=>{
+  let observed='';
+  const post=makePinnedHttpsPost(async(hostname)=>{observed=hostname;return [{address:'8.8.8.8',family:4},{address:'198.18.1.1',family:4}];});
+  await assert.rejects(post('https://receiver.example/private/callback?opaque=fixture','fixture body',{'webhook-signature':'fixture'}),/non_public_callback/);
+  assert.equal(observed,'receiver.example');
+  for(const addresses of [[],[{address:'2001:4860:4860::8888',family:6}],[{address:'127.0.0.1',family:4}]])await assert.rejects(makePinnedHttpsPost(async()=>addresses)('https://receiver.example','fixture',{}),/non_public_callback/);
+});
+test('runtime stop aborts pending DNS and rejects later resolved public addresses before callback connection',async(t)=>{
+  let connects=0;t.mock.method(https,'request',()=>{connects++;throw new Error('unexpected network request');});
+  const lifetime=new AbortController();let release!:(value:{address:string;family:number}[])=>void;let observedSignal:AbortSignal|undefined;
+  const post=makePinnedHttpsPost(async(_hostname,signal)=>{observedSignal=signal;return new Promise(resolve=>{release=resolve;});},lifetime.signal);
+  const pending=post('https://receiver.example/private','fixture',{});
+  lifetime.abort();await assert.rejects(pending);assert.equal(observedSignal?.aborted,true);
+  release([{address:'8.8.8.8',family:4}]);await new Promise(resolve=>setImmediate(resolve));
+  await assert.rejects(post('https://receiver.example/private','fixture',{}));
+  assert.equal(connects,0);
 });

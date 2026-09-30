@@ -134,8 +134,35 @@ exception text. `accepted` records that the callback was verified and subscripti
 stored at that time; `callback_delivery` separately reflects current active state,
 including later rollback or unsubscribe. A process restart clears the diagnostic.
 
+An address-policy rejection also includes bounded counts of public IPv4, blocked
+IPv4, the benchmark IPv4 subset (198.18/15), unsupported IPv6, and invalid addresses.
+No hostname or address is exposed. IPv6 remains unsupported in this conservative
+spike; that category does not claim that every IPv6 address is non-public. Empty
+DNS results have zero counts. The whole-answer rejection policy is unchanged.
+
 Callback address validation, DNS pinning, TLS verification and redirect refusal
 remain mandatory. Diagnose a categorized failure before changing transport code;
 never bypass those checks to make setup pass. Code changes require a clean runtime
 restart. The process-only key must be re-entered directly by the user; do not read
 it from a running process or add a persistent credential to avoid re-entry.
+
+### Optional, explicitly approved application-only DNS
+
+The default resolver remains the OS resolver. Some VPN DNS modes return benchmark
+addresses such as 198.18/15 for public hostnames; those addresses stay blocked.
+After explicit approval, this foreground test can use the fixed Cloudflare DoH
+endpoint for **callback hostnames only** by adding `cloudflare_doh` as the fourth
+launcher argument. The runtime mode is reported by `get_bridge_status`.
+
+This shares each callback's hostname (not its path, query, body, signature or key)
+with Cloudflare, using its documented `https://cloudflare-dns.com/dns-query` service
+bootstrapped to 1.1.1.1 with ordinary hostname/certificate verification. It does not
+change system DNS, the VPN, proxy settings, or the official client's control-plane
+resolver. There is no automatic fallback or arbitrary resolver endpoint setting.
+A and AAAA answers are checked together; non-public IPv4 and currently unsupported
+IPv6 still fail closed. Callback connections remain pinned to validated public
+addresses with original-host TLS verification, deadlines and no redirects.
+
+Before enabling this mode, run a credential-free public-host probe on the intended
+computer. Enabling the mode requires a clean foreground restart and direct user
+key entry. The existing process cannot hot-load code or resolver changes.

@@ -9,9 +9,12 @@ import { parseStrictJson } from '../bridge/json.mts';
 import { validateScope, verifyMetadata } from './identity.mts';
 import type { Scope } from './identity.mts';
 import { privateFile } from './stores.mts';
+import { validateCallbackResolver } from './resolver.mts';
 
 process.umask(0o077);
-const [binaryArgument,scopePath] = process.argv.slice(2);
+const [binaryArgument,scopePath,resolverArgument,...extra] = process.argv.slice(2);
+if(extra.length)throw new Error('Unexpected runtime arguments.');
+const callbackResolver=validateCallbackResolver(resolverArgument);
 if (!binaryArgument || !scopePath) throw new Error('Pass verified official binary and approved scope JSON paths.');
 privateFile(scopePath);
 const binary = resolve(binaryArgument), scope = parseStrictJson(await readFile(scopePath,'utf8')) as Scope;
@@ -22,7 +25,7 @@ if (!key || key.length > 2048 || !key.startsWith('sk-') || /\s/.test(key)) throw
 const runDir = await mkdtemp(join(tmpdir(),'stats-tunnel-')); await chmod(runDir,0o700);
 const node = process.execPath, server = fileURLToPath(new URL('./stdio.mts',import.meta.url));
 if (![node,server].every(p => /^[a-zA-Z0-9/_.-]+$/.test(p))) throw new Error('Use an installation path without spaces or shell metacharacters.');
-const safeEnv = { PATH:process.env.PATH, HOME:runDir, XDG_CONFIG_HOME:runDir, NODE_ENV:'production', STATS_TUNNEL_RUN_DIR:runDir };
+const safeEnv = { PATH:process.env.PATH, HOME:runDir, XDG_CONFIG_HOME:runDir, NODE_ENV:'production', STATS_TUNNEL_RUN_DIR:runDir, STATS_CALLBACK_RESOLVER:callbackResolver };
 const secretEnv = {...safeEnv,CONTROL_PLANE_API_KEY:key};
 const exec = promisify(execFile);
 const runUntil = Date.now()+3_600_000;

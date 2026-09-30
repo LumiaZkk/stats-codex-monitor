@@ -8,7 +8,12 @@ import { RuntimeStore,privateFile } from '../tunnel/stores.mts';
 import { SyntheticRuntime } from '../tunnel/server.mts';
 import { leasePrincipal,verifyMetadata } from '../tunnel/identity.mts';
 import { makeNativeFixture } from '../bridge/transfer.mts';
+import { callbackTransport,validateCallbackResolver } from '../tunnel/resolver.mts';
 const scope={mode:'exclusive_personal_synthetic' as const,tunnel_id:'tunnel_'+'a'.repeat(32),organization_id:'org-test',workspace_id:'11111111-1111-4111-8111-111111111111'};
+test('runtime resolver changes require an explicit finite mode, with system default and no arbitrary endpoint',()=>{
+  assert.equal(validateCallbackResolver(undefined),'system');assert.equal(callbackTransport('system').mode,'system');assert.equal(callbackTransport('cloudflare_doh').mode,'cloudflare_doh');
+  for(const value of ['https://arbitrary.example/dns-query','fallback',true,null,''])assert.throws(()=>validateCallbackResolver(value),/invalid_callback_resolver/);
+});
 test('exclusive boundary rejects broadened, wrong or expired tunnel metadata',()=>{
   const metadata={id:scope.tunnel_id,organization_ids:[scope.organization_id],workspace_ids:[scope.workspace_id]};
   verifyMetadata(scope,metadata);
