@@ -2034,7 +2034,6 @@
 			files = (
 				5C0A2A8A292A5B4D009B4C1F /* SMJobBlessUtil.py in Resources */,
 				9A46BF36266D6E17001A1117 /* i18n.py in Resources */,
-				9A2848082666AB3000EC1F6D /* updater.sh in Resources */,
 				5CFE494429265421000F2856 /* changelog.py in Resources */,
 				5EE5C0B93062FEA400E7DAB4 /* install.sh in Resources */,
 			);

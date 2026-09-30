@@ -36,6 +36,8 @@ jobs:
           test ! -e "$app/Contents/Library/LaunchServices/eu.exelban.Stats.SMC.Helper"
           test ! -e "$app/Contents/Resources/Scripts/updater.sh"
           test ! -e "$app/Contents/Resources/smc"
+          forbidden=$(find "$app" -type f \( -name 'updater.sh' -o -name 'uninstall.sh' -o -name 'smc' -o -name '*SMC.Helper*' \) -print)
+          test -z "$forbidden" || { printf 'Unexpected payloads:\n%s\n' "$forbidden"; exit 1; }
       - name: Package unsigned development artifact
         run: |
           mkdir -p dist
