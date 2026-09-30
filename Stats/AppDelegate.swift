@@ -23,21 +23,11 @@ import Clock
 import Remote
 
 let updater = Updater(github: "exelban/stats", url: "https://api.mac-stats.com/release/latest")
-var modules: [Module] = [
-    CPU(),
-    GPU(),
-    RAM(),
-    Disk(),
-    Sensors(),
-    Network(),
-    Battery(),
-    Bluetooth(),
-    Clock(),
-    Remote()
-]
+var modules: [Module] = [CPU(), RAM(), Disk()]
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    private var diagnostics: DiagnosticsController?
     internal var settingsWindow: SettingsWindow?
     internal var updateWindow: UpdateWindow?
     internal var setupWindow: SetupWindow?
@@ -75,13 +65,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         self.suppressStatusBarTilingConstraintUpdates()
         self.parseArguments()
         self.parseVersion()
-        SMCHelper.shared.checkForUpdate()
+        UNUserNotificationCenter.current().delegate = self
+        self.defaultValues()
+        self.diagnostics = DiagnosticsController()
         self.setup {
             modules.reversed().forEach{ $0.mount() }
             self.modulesMounted = true
             self.showSettingsIfNoActiveWidgets()
         }
-        self.defaultValues()
         self.icon()
         
         NotificationCenter.default.addObserver(self, selector: #selector(listenForAppPause), name: .pause, object: nil)
@@ -103,6 +94,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func applicationWillTerminate(_ aNotification: Notification) {
+        self.diagnostics?.stop()
         modules.forEach{ $0.terminate() }
         SystemStats.shared.terminate()
     }
@@ -197,6 +189,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.notification.request.content.userInfo["diagnostics"] as? Bool == true {
+            DispatchQueue.main.async { self.diagnostics?.showHistory() }
+            completionHandler()
+            return
+        }
         self.clickInNotification = true
         
         if let uri = response.notification.request.content.userInfo["url"] as? String {

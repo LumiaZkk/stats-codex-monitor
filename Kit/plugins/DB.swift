@@ -31,9 +31,11 @@ public class DB {
     }
     
     init() {
+        // The fork persists only its bounded sanitized DiagnosticsArchive.
+        guard !DiagnosticsBridge.enabled else { return }
         let fileManager = FileManager.default
-        let supportPath = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("Stats")
-        let tmpPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Stats")
+        let supportPath = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent(DiagnosticsBridge.dataFolder)
+        let tmpPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(DiagnosticsBridge.dataFolder)
         
         try? fileManager.createDirectory(at: supportPath, withIntermediateDirectories: true, attributes: nil)
         try? fileManager.createDirectory(at: tmpPath, withIntermediateDirectories: true, attributes: nil)
@@ -68,6 +70,7 @@ public class DB {
     }
     
     public func setup<T: Codable>(_ type: T.Type, _ key: String) {
+        guard !DiagnosticsBridge.enabled else { return }
         self.clean(key)
         if let raw = self.lldb?.findOne(key), let value = try? JSONDecoder().decode(type, from: Data(raw.utf8)) {
             self.queue.sync { self._values[key] = value }
@@ -75,6 +78,7 @@ public class DB {
     }
     
     public func insert(key: String, value: Codable, ts: Bool = true, force: Bool = false) {
+        guard !DiagnosticsBridge.enabled else { return }
         self.queue.sync { self._values[key] = value }
         guard let blobData = try? JSONEncoder().encode(value), let str = String(data: blobData, encoding: .utf8) else { return }
         

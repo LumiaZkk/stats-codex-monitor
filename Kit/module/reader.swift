@@ -93,7 +93,7 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
         DB.shared.setup(T.self, "\(module.stringValue)@\(self.name)")
         if let lastValue = DB.shared.findOne(T.self, key: "\(module.stringValue)@\(self.name)") {
             self.value = lastValue
-            callback(lastValue)
+            if !DiagnosticsBridge.enabled { callback(lastValue) }
         }
         self.setup()
         
@@ -107,7 +107,7 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     public func initStoreValues(title: String) {
         guard self.interval == nil else { return }
         let updateInterval = Store.shared.int(key: "\(title)_updateInterval", defaultValue: self.defaultInterval)
-        self.interval = Double(updateInterval)
+        self.interval = Double(DiagnosticsBridge.interval(module: self.module, reader: self.name, requested: updateInterval))
     }
     
     public func callback(_ value: T?) {
@@ -115,7 +115,7 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
         self.value = value
         if let value {
             self.callbackHandler(value)
-            SystemStats.shared.send(key: moduleKey, value: value)
+            if !DiagnosticsBridge.enabled { SystemStats.shared.send(key: moduleKey, value: value) }
             if let ts = self.lastDBWrite, let interval = self.interval, Date().timeIntervalSince(ts) > interval * 10 {
                 DB.shared.insert(key: moduleKey, value: value, ts: self.history)
                 self.lastDBWrite = Date()
@@ -176,7 +176,8 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
         self.active = false
     }
     
-    public func setInterval(_ value: Int) {
+    public func setInterval(_ requested: Int) {
+        let value = DiagnosticsBridge.interval(module: self.module, reader: self.name, requested: requested)
         debug("Set update interval: \(value) sec", log: self.log)
         self.interval = Double(value)
         

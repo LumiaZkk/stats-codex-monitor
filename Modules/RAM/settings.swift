@@ -87,12 +87,12 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         self.addArrangedSubview(PreferencesSection([
             PreferencesRow(localizedString("Update interval"), component: selectView(
                 action: #selector(self.changeUpdateInterval),
-                items: ReaderUpdateIntervals,
+                items: DiagnosticsBridge.enabled ? [KeyValue_t(key: "60", value: "60 sec (local diagnostics)")] : ReaderUpdateIntervals,
                 selected: "\(self.updateIntervalValue)"
             )),
             PreferencesRow(localizedString("Update interval for top processes"), component: selectView(
                 action: #selector(self.changeUpdateTopInterval),
-                items: ReaderUpdateIntervals,
+                items: DiagnosticsBridge.enabled ? [KeyValue_t(key: "300", value: "5 min (local diagnostics)")] : ReaderUpdateIntervals,
                 selected: "\(self.updateTopIntervalValue)"
             ))
         ]))

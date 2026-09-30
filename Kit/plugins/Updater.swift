@@ -71,6 +71,7 @@ public class Updater {
     }
     
     public func check(force: Bool = false, completion: @escaping (_ result: version_s?, _ error: Error?) -> Void) {
+        guard !DiagnosticsBridge.enabled else { completion(nil, "Upstream updates are disabled in Stats Diagnostics"); return }
         if !isConnectedToNetwork() {
             completion(nil, "No internet connection")
             return
@@ -140,6 +141,7 @@ public class Updater {
     }
     
     public func download(_ url: URL, progress: @escaping (_ progress: Progress) -> Void = {_ in }, completion: @escaping (_ path: String) -> Void = {_ in }) {
+        guard !DiagnosticsBridge.enabled else { return }
         let downloadTask = URLSession.shared.downloadTask(with: url) { urlOrNil, _, _ in
             guard let fileURL = urlOrNil else { return }
             do {
@@ -167,6 +169,7 @@ public class Updater {
     }
     
     public func install(path: String, completion: @escaping (_ error: String?) -> Void) {
+        guard !DiagnosticsBridge.enabled else { completion("Upstream updates are disabled in Stats Diagnostics"); return }
         let dmg = path.replacingOccurrences(of: "file://", with: "")
         let pwd = Bundle.main.bundleURL.deletingLastPathComponent().path
         

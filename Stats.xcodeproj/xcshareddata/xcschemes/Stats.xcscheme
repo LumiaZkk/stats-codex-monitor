@@ -15,22 +15,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "9A1410F4229E721100D29793"
-               BuildableName = "Stats.app"
+               BuildableName = "Stats Diagnostics.app"
                BlueprintName = "Stats"
-               ReferencedContainer = "container:Stats.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "5CFE492629264DF1000F2856"
-               BuildableName = "eu.exelban.Stats.SMC.Helper"
-               BlueprintName = "Helper"
                ReferencedContainer = "container:Stats.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -45,7 +31,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "9A1410F4229E721100D29793"
-            BuildableName = "Stats.app"
+            BuildableName = "Stats Diagnostics.app"
             BlueprintName = "Stats"
             ReferencedContainer = "container:Stats.xcodeproj">
          </BuildableReference>
@@ -78,7 +64,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "9A1410F4229E721100D29793"
-            BuildableName = "Stats.app"
+            BuildableName = "Stats Diagnostics.app"
             BlueprintName = "Stats"
             ReferencedContainer = "container:Stats.xcodeproj">
          </BuildableReference>
@@ -125,7 +111,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "9A1410F4229E721100D29793"
-            BuildableName = "Stats.app"
+            BuildableName = "Stats Diagnostics.app"
             BlueprintName = "Stats"
             ReferencedContainer = "container:Stats.xcodeproj">
          </BuildableReference>

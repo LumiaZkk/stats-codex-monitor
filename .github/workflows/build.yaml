@@ -1,21 +1,50 @@
-name: build
-
+name: Native diagnostics checks
 on:
   push:
-    branches:
-      - master
   pull_request:
-    branches:
-      - master
-
+  workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
-  group: build-${{ github.ref }}
+  group: diagnostics-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-  build:
+  macos-build:
     runs-on: macos-latest
-
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - run: xcodebuild -scheme Stats -destination 'platform=macOS' -configuration Release archive CODE_SIGNING_ALLOWED=NO
+      - uses: actions/checkout@v4
+      - name: Report selected tools
+        run: |
+          xcodebuild -version
+          swiftc --version
+      - name: Test production diagnostics rules and persistence
+        run: ./scripts/test-diagnostics.sh
+      - name: Build without signing credentials
+        run: |
+          set -o pipefail
+          xcodebuild -project Stats.xcodeproj -scheme Stats -configuration Release \
+            -destination 'platform=macOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Verify fork identity and omitted payloads
+        run: |
+          app='build/Build/Products/Release/Stats Diagnostics.app'
+          test -d "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")" = 'io.github.LumiaZkk.StatsDiagnostics'
+          test ! -e "$app/Contents/PlugIns/WidgetsExtension.appex"
+          test ! -e "$app/Contents/Library/LaunchDaemons/eu.exelban.Stats.SMC.Helper.plist"
+          test ! -e "$app/Contents/Library/LaunchServices/eu.exelban.Stats.SMC.Helper"
+          test ! -e "$app/Contents/Resources/Scripts/updater.sh"
+          test ! -e "$app/Contents/Resources/smc"
+          forbidden=$(find "$app" -type f \( -name 'updater.sh' -o -name 'uninstall.sh' -o -name 'smc' -o -name '*SMC.Helper*' \) -print)
+          test -z "$forbidden" || { printf 'Unexpected payloads:\n%s\n' "$forbidden"; exit 1; }
+      - name: Package unsigned development artifact
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent 'build/Build/Products/Release/Stats Diagnostics.app' dist/Stats-Diagnostics-unsigned.zip
+          printf '%s\n' 'Experimental unsigned CI build. Not a notarized release. Native UI, notifications, sleep/wake and resource-use QA still required.' > dist/READ-ME-FIRST.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stats-diagnostics-unsigned-${{ github.sha }}
+          path: dist/
+          retention-days: 7

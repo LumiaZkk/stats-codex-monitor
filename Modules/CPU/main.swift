@@ -145,7 +145,10 @@ public class CPU: Module {
         }
         self.processReader = ProcessReader(.CPU) { [weak self] value in
             self?.popupView.processCallback(value)
+            if let value { DiagnosticsBridge.post("cpuProcesses", values: [:], processes: value) }
         }
+        self.processReader?.popup = !DiagnosticsBridge.enabled
+        if !DiagnosticsBridge.enabled {
         self.averageLoadReader = AverageLoadReader(.CPU, popup: true) { [weak self] value in
             self?.popupView.averageCallback(value)
             self?.previewView.averageCallback(value)
@@ -164,6 +167,7 @@ public class CPU: Module {
             self?.previewView.frequencyCallback(value)
         }
         #endif
+        }
         
         self.settingsView.callback = { [weak self] in
             self?.loadReader?.read()
@@ -195,6 +199,7 @@ public class CPU: Module {
     private func loadCallback(_ raw: CPU_Load?) {
         guard let value = raw, self.enabled else { return }
         
+        DiagnosticsBridge.post("cpu", values: ["usage": value.totalUsage])
         self.popupView.loadCallback(value)
         self.portalView.callback(value)
         self.notificationsView.loadCallback(value)

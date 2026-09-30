@@ -169,6 +169,7 @@ public class SystemStats {
     }
     
     public func login() {
+        guard !DiagnosticsBridge.enabled else { return }
         self.auth.login { url in
             guard let url else {
                 error("Empty url when try to login", log: self.log)
@@ -180,6 +181,7 @@ public class SystemStats {
     }
     
     public func logout() {
+        guard !DiagnosticsBridge.enabled else { return }
         guard Thread.isMainThread else {
             DispatchQueue.main.async { self.logout() }
             return
@@ -192,6 +194,7 @@ public class SystemStats {
     }
     
     public func deregister() {
+        guard !DiagnosticsBridge.enabled else { return }
         guard let url = URL(string: "\(SystemStats.host)/v1/machine/\(SystemStats.shared.id.uuidString)/deregister") else { return }
         
         var request = URLRequest(url: url)
@@ -225,6 +228,7 @@ public class SystemStats {
     }
     
     public func start() {
+        guard !DiagnosticsBridge.enabled else { return }
         self.mqtt.connect()
     }
     
@@ -264,6 +268,7 @@ public class SystemStats {
     }
     
     public func authorizedData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard !DiagnosticsBridge.enabled else { throw CancellationError() }
         let generation = self.auth.generation
         var request = try await self.authorizedRequest(request)
         var result = try await self.session.data(for: request)
@@ -298,6 +303,7 @@ public class SystemStats {
     }
     
     private func registerDevice(omitCooldown: Bool = false) {
+        guard !DiagnosticsBridge.enabled else { return }
         let oneHour: TimeInterval = 3600
         let now = Date()
         self.cooldownLock.lock()
@@ -621,7 +627,7 @@ public class RemoteAuth {
     }
     
     public init() {
-        RemoteKeychain.migrateFromUserDefaultsIfNeeded()
+        if !DiagnosticsBridge.enabled { RemoteKeychain.migrateFromUserDefaultsIfNeeded() }
     }
     
     deinit {
@@ -634,6 +640,7 @@ public class RemoteAuth {
         }
     }
     public func hasCredentials() -> Bool {
+        guard !DiagnosticsBridge.enabled else { return false }
         self.credentialLock.lock()
         defer { self.credentialLock.unlock() }
         return !self.accessToken.isEmpty && !self.refreshToken.isEmpty

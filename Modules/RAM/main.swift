@@ -132,6 +132,7 @@ public class RAM: Module {
         self.processReader = ProcessReader(.RAM) { [weak self] value in
             if let list = value {
                 self?.popupView.processCallback(list)
+                DiagnosticsBridge.post("memoryProcesses", values: [:], processes: list)
             }
         }
         
@@ -142,12 +143,15 @@ public class RAM: Module {
             }
         }
         
+        self.processReader?.popup = !DiagnosticsBridge.enabled
         self.setReaders([self.usageReader, self.processReader])
     }
     
     private func loadCallback(_ raw: RAM_Usage?) {
         guard let value = raw, self.enabled else { return }
         
+        DiagnosticsBridge.post("memory", values: ["used": value.used, "total": value.total,
+                                                     "swap": value.swap.used, "pressure": Double(value.pressure.level)])
         self.popupView.loadCallback(value)
         self.portalView.callback(value)
         self.notificationsView.loadCallback(value)

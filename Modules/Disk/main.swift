@@ -263,6 +263,7 @@ public class Disk: Module {
                 self?.capacityCallback(value)
             }
         }
+        if !DiagnosticsBridge.enabled {
         self.activityReader = ActivityReader(.disk) { [weak self] value in
             if let value {
                 self?.activityCallback(value)
@@ -279,6 +280,7 @@ public class Disk: Module {
             }
         }
         
+        }
         self.selectedDisk = Store.shared.string(key: "\(ModuleType.disk.stringValue)_disk", defaultValue: self.selectedDisk)
         
         self.settingsView.selectedDiskHandler = { [weak self] value in
@@ -307,6 +309,9 @@ public class Disk: Module {
     
     private func capacityCallback(_ value: Disks) {
         guard self.enabled else { return }
+        if let root = value.first(where: { $0.root }) {
+            DiagnosticsBridge.post("disk", values: ["free": Double(root.free), "total": Double(root.size)])
+        }
         
         DispatchQueue.main.async(execute: {
             self.popupView.capacityCallback(value)
