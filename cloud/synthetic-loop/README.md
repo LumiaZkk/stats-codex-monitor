@@ -6,16 +6,15 @@ This is a protocol prototype, not a completed monitor integration. No telemetry 
 
 - Local signed mock-event roundtrip passes: create fixed request → verified mock callback → read tool → strict proposal write → client result.
 - The private Site is a discovery/read/proposal probe. Its `events/subscribe` returns MCP `Unsupported` (-32014), feature `callbackTransport`, reason `callback_transport_unverified`. It does not accept, store or use callback secrets.
-- Live verification on 2026-09-30: the private plugin connected in the intended dot conversation; `server/discover` and `events/list` were observed; the actual automation event-source catalog exposed `diagnostic.requested` with the expected stream filter.
-- A manual live tool roundtrip in that same dot passed: create fixed synthetic request → read the exact request/hash → submit a schema-valid dry-run proposal → retrieve the identical proposal/hash. Private request IDs and account data are intentionally omitted here.
-- Automatic callback subscription, event wake-up and same-chat event-driven return remain unverified. No live `events/subscribe` call was attempted while the callback transport is blocked. A successful build, unit test, manual tool flow or callback HTTP 2xx cannot establish the automatic path.
-- There is no native Mac adapter, pairing, telemetry upload, local persistent agent, model-provider credential, execute endpoint or shell field.
+- Live plugin/event-source discovery and a manual same-dot tool roundtrip were verified on 2026-09-30. Automatic event delivery remains unverified and disabled.
+- The next increment adds explicit signed-in browser file transfer for native synthetic requests; see `TRANSFER.md` for its manual steps and unsigned-file boundary.
+- There is no native pairing, telemetry upload, persistent Mac agent, model-provider credential, server execute endpoint or shell field. Native offline import/export and separately approved local checks are developed independently.
 
 ## Contract and security
 
 `create_synthetic_request` accepts only a UUID idempotency key and the `high-cpu-v1` fixture selector. All numbers come from the server fixture. Requests have a server UUID, stable event ID, immutable canonical SHA-256 hash and 30-minute expiry. D1 owns request/proposal state; reads and compare-and-set proposal writes are scoped by the trusted Sites-authenticated principal. Request creation and duplicate proposal writes are idempotent. A second different proposal is rejected. Cancellation and expiry hide/invalidate proposals. HTTP bodies are bounded at 16 KiB.
 
-`get_diagnostic_request`, `get_diagnostic_result`, and `get_bridge_status` are read-only tools. `create_synthetic_request` and `submit_diagnostic_plan` are correctly marked mutating. Plans must reference the exact request hash and expire no later than it. Their only action variants are dry-run `open_activity_monitor` targeting `current_device` and dry-run `observe_metrics` with fixed metric names and 60–300 seconds. Unknown properties, commands, PID targets and non-dry-run plans fail validation. Human-readable summaries are inert data and are never interpreted as instructions to execute.
+`get_diagnostic_request`, `get_diagnostic_result`, and `get_bridge_status` are read-only tools. `create_synthetic_request` and `submit_diagnostic_plan` are correctly marked mutating. Plans must reference the exact request hash and expire no later than it. Their only action variants are dry-run `open_activity_monitor` targeting `current_device` and dry-run `observe_metrics` with fixed metric names and 60–120 seconds. Unknown properties, commands, PID targets and non-dry-run plans fail validation. Human-readable summaries are inert data and are never interpreted as instructions to execute.
 
 The hosted app trusts only the platform's `oai-authenticated-user-id` header behind the private Sites boundary. It has no user-identity fallback, fake user, custom credential or direct public backend. Local tests inject identities only into isolated test objects. Never expose this application behind a proxy that does not strip and authenticate that header.
 
@@ -46,6 +45,8 @@ Production event enablement also needs durable subscription/outbox storage and a
 Node 24 (Node 22.18+ supports the TypeScript stripping used by the pure contract tests):
 
     node --test tests/*.test.mts
+    npm ci --ignore-scripts
+    npm run typecheck
 
 `tests/roundtrip.test.mts`: full isolated mock roundtrip, hashes, allowlist, idempotency, owner isolation, cancellation, expiry, protocol gate and SSRF address classification.
 `tests/events.test.mts`: subscription identity/refresh, verification, invalid secrets/URLs, retries, filtering, revocation, termination responses and expiry. Reconstructs an event service over the same test store; this is not a durable process-restart test.
@@ -64,4 +65,8 @@ Node 24 (Node 22.18+ supports the TypeScript stripping used by the pure contract
 
 Publish only generic contract, tests, migration schema and this documentation. Site runtime IDs, owner IDs, callback URLs, signing secrets, auth state and private source credentials must not be committed to the public monitor repository. The native diagnostics PR and installed build remain unchanged.
 
-The public package contains the dependency-free contracts, protocol adapters and tests. The private Site checkout additionally contains its platform-authenticated routes, D1 migration definitions and minimal test page. Those routes are not a standalone self-hosted server.
+## Minimal-dependency continuation
+
+The selected continuation uses explicit manual invocation in the existing dot conversation and signed-in browser import/export. It does not require a new callback host. Automatic event delivery remains out of scope for this increment. See `TRANSFER.md`.
+
+The public package contains runtime-dependency-free contracts, fixtures, tests and generic Sites adapters under `site/`. Type definitions are development-only dependencies. Dedicated Synthetic bridge CI covers Node tests/type-checks; the existing macOS archive job does not substitute for those checks.

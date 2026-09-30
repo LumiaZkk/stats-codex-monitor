@@ -7,7 +7,7 @@ export type Schema = { type?: string; const?: unknown; enum?: readonly unknown[]
 const uuid: Schema = { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' };
 const hash: Schema = { type: 'string', pattern: '^[0-9a-f]{64}$' };
 const instant: Schema = { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$' };
-const object = (properties: Record<string, Schema>, required = Object.keys(properties)): Schema => ({ type: 'object', properties, required, additionalProperties: false });
+export const object = (properties: Record<string, Schema>, required = Object.keys(properties)): Schema => ({ type: 'object', properties, required, additionalProperties: false });
 export const createSchema = object({ idempotency_key: uuid, fixture: { const: 'high-cpu-v1' } });
 export const requestArgsSchema = object({ request_id: uuid });
 export const filterSchema = object({ stream_id: { const: STREAM_ID } });
@@ -16,10 +16,11 @@ export const planSchema = object({
   expires_at: instant, dry_run: { const: true }, summary: { type: 'string', maxLength: 1000 },
   actions: { type: 'array', minItems: 1, maxItems: 2, items: { oneOf: [
     object({ type: { const: 'open_activity_monitor' }, target: { const: 'current_device' }, dry_run: { const: true } }),
-    object({ type: { const: 'observe_metrics' }, metrics: { type: 'array', minItems: 1, maxItems: 3, items: { enum: ['cpu_utilization', 'memory_pressure', 'disk_free_gib'] } }, duration_seconds: { type: 'integer', minimum: 60, maximum: 300 }, dry_run: { const: true } }),
+    object({ type: { const: 'observe_metrics' }, metrics: { type: 'array', minItems: 1, maxItems: 3, items: { enum: ['cpu_utilization', 'memory_pressure', 'disk_free_gib'] } }, duration_seconds: { type: 'integer', minimum: 60, maximum: 120 }, dry_run: { const: true } }),
   ] } },
 });
 export const eventSchema = object({ request_id: uuid, request_hash: hash, stream_id: { const: STREAM_ID }, synthetic: { const: true }, expires_at: instant });
+export const nativeRequestSchema = object({ schema_version: { const: 1 }, kind: { const: 'stats_synthetic_request' }, client_request_id: uuid, fixture: { const: 'high-cpu-v1' }, created_at: instant, expires_at: instant, client_request_hash: hash });
 
 export class Fault extends Error {
   code: number; status: number; reason: string;
@@ -61,7 +62,16 @@ export function canonical(value: unknown): string {
 }
 export const digest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex');
 export type Plan = { schema_version: 1; request_id: string; request_hash: string; plan_id: string; expires_at: string; dry_run: true; summary: string; actions: Array<{ type: 'open_activity_monitor'; target: 'current_device'; dry_run: true } | { type: 'observe_metrics'; metrics: string[]; duration_seconds: number; dry_run: true }> };
-export type DiagnosticRequest = { schema_version: 1; request_id: string; stream_id: string; fixture: 'high-cpu-v1'; synthetic: true; snapshot: typeof FIXTURE; created_at: string; expires_at: string };
+export type NativeTransferRequest = { schema_version: 1; kind: 'stats_synthetic_request'; client_request_id: string; fixture: 'high-cpu-v1'; created_at: string; expires_at: string; client_request_hash: string };
+export function validateNativeRequest(value: unknown, now: number): asserts value is NativeTransferRequest {
+  validate(nativeRequestSchema, value);
+  const request = value as NativeTransferRequest;
+  const { client_request_hash, ...body } = request;
+  if (digest(body) !== client_request_hash) throw new Fault('client_request_hash_mismatch', 409);
+  const created = Date.parse(request.created_at), expires = Date.parse(request.expires_at);
+  if (!Number.isFinite(created) || !Number.isFinite(expires) || new Date(created).toISOString() !== request.created_at || new Date(expires).toISOString() !== request.expires_at || created > now + 120_000 || expires <= now || expires <= created || expires - created > 30 * 60_000) throw new Fault('invalid_transfer_expiry');
+}
+export type DiagnosticRequest = { schema_version: 1; request_id: string; stream_id: string; fixture: 'high-cpu-v1'; synthetic: true; snapshot: typeof FIXTURE; created_at: string; expires_at: string; client_request?: NativeTransferRequest };
 export type RecordRow = { owner: string; idempotencyKey: string; request: DiagnosticRequest; requestHash: string; eventId: string; cancelled: boolean; plan: Plan | null; planHash: string | null };
 export interface Store {
   create(row: RecordRow): Promise<RecordRow>;
@@ -78,12 +88,15 @@ export function principal(owner: string | null | undefined): string {
 export class Bridge {
   store: Store; clock: () => number;
   constructor(store: Store, clock = Date.now) { this.store = store; this.clock = clock; }
-  async create(owner: string, input: unknown) {
+  async create(owner: string, input: unknown, clientRequest?: NativeTransferRequest) {
     principal(owner); validate(createSchema, input);
     const args = input as { idempotency_key: string; fixture: 'high-cpu-v1' };
     const now = this.clock();
-    const request: DiagnosticRequest = { schema_version: 1, request_id: randomUUID(), stream_id: STREAM_ID, fixture: args.fixture, synthetic: true, snapshot: FIXTURE, created_at: new Date(now).toISOString(), expires_at: new Date(now + 30 * 60_000).toISOString() };
-    return this.public(await this.store.create({ owner, idempotencyKey: args.idempotency_key, request, requestHash: digest(request), eventId: 'evt_' + randomUUID(), cancelled: false, plan: null, planHash: null }));
+    if (clientRequest !== undefined) validateNativeRequest(clientRequest, now);
+    const request: DiagnosticRequest = { schema_version: 1, request_id: randomUUID(), stream_id: STREAM_ID, fixture: args.fixture, synthetic: true, snapshot: FIXTURE, created_at: new Date(now).toISOString(), expires_at: new Date(Math.min(now + 30 * 60_000, clientRequest ? Date.parse(clientRequest.expires_at) : Infinity)).toISOString(), ...(clientRequest ? { client_request: clientRequest } : {}) };
+    const saved = await this.store.create({ owner, idempotencyKey: args.idempotency_key, request, requestHash: digest(request), eventId: 'evt_' + randomUUID(), cancelled: false, plan: null, planHash: null });
+    if (canonical(saved.request.client_request ?? null) !== canonical(clientRequest ?? null)) throw new Fault('idempotency_conflict', 409);
+    return this.public(saved);
   }
   public(row: RecordRow) {
     const expired = Date.parse(row.request.expires_at) <= this.clock() || (row.plan && Date.parse(row.plan.expires_at) <= this.clock());
@@ -97,9 +110,11 @@ export class Bridge {
   async read(owner: string, id: string) { return this.public(await this.row(owner, id)); }
   async submit(owner: string, input: unknown) {
     principal(owner); validate(planSchema, input);
-    const plan = input as Plan; const row = await this.row(owner, plan.request_id); const now = this.clock();
+    const plan = input as Plan;
+    if (new Set(plan.actions.map(a => a.type)).size !== plan.actions.length || plan.actions.some(a => a.type === 'observe_metrics' && new Set(a.metrics).size !== a.metrics.length)) throw new Fault('duplicate_plan_action_or_metric');
+    const row = await this.row(owner, plan.request_id); const now = this.clock();
     if (plan.request_hash !== row.requestHash) throw new Fault('request_hash_mismatch', 409, -32009);
-    if (!Number.isFinite(Date.parse(plan.expires_at)) || Date.parse(plan.expires_at) <= now || Date.parse(plan.expires_at) > Date.parse(row.request.expires_at)) throw new Fault('invalid_plan_expiry');
+    if (!Number.isFinite(Date.parse(plan.expires_at)) || new Date(Date.parse(plan.expires_at)).toISOString() !== plan.expires_at || Date.parse(plan.expires_at) <= now || Date.parse(plan.expires_at) > Date.parse(row.request.expires_at)) throw new Fault('invalid_plan_expiry');
     const ph = digest(plan);
     const saved = await this.store.propose(owner, plan.request_id, plan, ph, new Date(now).toISOString());
     if (!saved) throw new Fault('not_found', 404, -32004);

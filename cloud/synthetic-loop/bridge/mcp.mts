@@ -1,10 +1,13 @@
-import { Bridge, Fault, EVENT_NAME, STREAM_ID, filterSchema, eventSchema, requestArgsSchema, planSchema, createSchema, principal, validate } from './core.mts';
+import { exportNativeResult, importNativeRequest } from './transfer.mts';
+import { Bridge, Fault, EVENT_NAME, STREAM_ID, filterSchema, eventSchema, requestArgsSchema, planSchema, createSchema, nativeRequestSchema, principal, validate } from './core.mts';
 import type { Schema } from './core.mts';
 export const CALLBACK_GATE = 'callback_transport_unverified';
 const tool = (name: string, description: string, inputSchema: Schema, readOnly: boolean) => ({ name, description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: true, openWorldHint: false } });
 export const TOOLS = [
   tool('get_bridge_status', 'Read synthetic bridge readiness and methods observed for your account. A proposal is never executed.', { type: 'object', properties: {}, additionalProperties: false }, true),
   tool('get_diagnostic_request', 'Read one synthetic request owned by the connected account, including its immutable hash and expiry.', requestArgsSchema, true),
+  tool('import_synthetic_request', 'Import the fixed synthetic request file exported by the app. No real metrics, credentials or extra fields are accepted. This is an explicit manual transfer, not native authentication or automatic upload.', nativeRequestSchema, false),
+  tool('get_native_result_bundle', 'Read the unsigned synthetic result file for an owned native import/export request. File hashes bind content; they do not authenticate its origin or authorize local execution.', requestArgsSchema, true),
   tool('get_diagnostic_result', 'Read an owned synthetic proposal result. This does not prove event delivery or execute anything.', requestArgsSchema, true),
   tool('create_synthetic_request', 'Create a fixed synthetic high-CPU fixture for a dry-run protocol test. Accepts no real telemetry.', createSchema, false),
   tool('submit_diagnostic_plan', 'Store an immutable, schema-validated dry-run proposal for an owned unexpired request. Only open_activity_monitor and observe_metrics are allowed; neither executes.', planSchema, false),
@@ -35,8 +38,10 @@ export async function rpc(bridge: Bridge, owner: string | null, body: unknown, e
         validate(t.inputSchema, p.arguments ?? {});
         const args = p.arguments as { request_id: string };
         let data: unknown;
-        if (p.name === 'get_bridge_status') data = { synthetic_only: true, stream_id: STREAM_ID, callback_delivery: events ? 'test_adapter' : 'blocked', blocker: events ? null : CALLBACK_GATE, same_dot_roundtrip: 'not_verified', execution: 'not_supported', observed_methods: await bridge.store.methods(user) };
+        if (p.name === 'get_bridge_status') data = { synthetic_only: true, stream_id: STREAM_ID, callback_delivery: events ? 'test_adapter' : 'blocked', blocker: events ? null : CALLBACK_GATE, same_dot_roundtrip: 'not_verified', execution: 'not_supported', transfer_mode: 'signed_in_browser_files', native_pairing: 'not_supported', observed_methods: await bridge.store.methods(user) };
         else if (p.name === 'create_synthetic_request') data = await bridge.create(user, p.arguments);
+        else if (p.name === 'import_synthetic_request') data = await importNativeRequest(bridge, user, p.arguments);
+        else if (p.name === 'get_native_result_bundle') data = await exportNativeResult(bridge, user, args.request_id);
         else if (p.name === 'submit_diagnostic_plan') data = await bridge.submit(user, p.arguments);
         else data = await bridge.read(user, args.request_id);
         result = { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: false };
