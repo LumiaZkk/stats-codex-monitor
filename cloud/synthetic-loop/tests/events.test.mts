@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Events, signingKey } from '../bridge/events.mts';
 import type { Subscription, SafePost } from '../bridge/events.mts';
-import { Bridge, EVENT_NAME, STREAM_ID } from '../bridge/core.mts';
+import { Bridge, Fault, EVENT_NAME, STREAM_ID } from '../bridge/core.mts';
 import { MemoryStore } from '../bridge/memory-store.mts';
 import { randomUUID } from 'node:crypto';
 const secret = 'whsec_' + Buffer.alloc(32, 6).toString('base64');
@@ -51,4 +51,29 @@ test('410, 413, cancellation and expiration never retry', async () => {
   const s = setup(); const sub = await s.events.subscribe('a', { ...params, ttlMs: 1000 }); const event = { eventId: 'evt_test', name: EVENT_NAME, data: { stream_id: STREAM_ID, request_id: randomUUID(), request_hash: '1'.repeat(64), synthetic: true, expires_at: '2026-09-30T08:30:00.000Z' } };
   await assert.rejects(s.events.deliver('a', sub.id, event, async () => false), /request_terminal/);
   s.time(1000); await assert.rejects(s.events.deliver('a', sub.id, event, async () => true), /subscription_inactive/);
+});
+test('subscription diagnostics expose only categorized failures, never request or response secrets', async () => {
+  const cases: [unknown,string][] = [
+    [new Fault('non_public_callback'),'non_public_callback'],
+    [Object.assign(new Error(params.delivery.url+secret),{code:'ENOTFOUND'}),'callback_dns_failed'],
+    [Object.assign(new Error(secret),{code:'ABORT_ERR'}),'callback_timeout'],
+    [Object.assign(new Error(secret),{code:'ERR_TLS_CERT_ALTNAME_INVALID'}),'callback_tls_failed'],
+    [Object.assign(new Error(secret),{code:'ECONNRESET'}),'callback_connection_failed'],
+    [new Error(params.delivery.url+secret),'callback_transport_error'],
+  ];
+  for (const [error,reason] of cases) {
+    const s=setup(async()=>{throw error;});
+    await assert.rejects(s.events.subscribe('a',params),e=>e instanceof Fault && e.code===-32015 && e.reason===reason);
+    assert.deepEqual(s.events.lastSubscription,{stage:'failed',reason});assert.equal(s.subscriptions.size,0);
+    const diagnostic=JSON.stringify(s.events.lastSubscription);assert.ok(!diagnostic.includes(secret));assert.ok(!diagnostic.includes(params.delivery.url));
+  }
+});
+test('HTTP, malformed JSON, mismatch and successful verification have distinct safe diagnostics', async () => {
+  for (const [status,body,reason] of [[403,secret,'callback_http_error'],[200,secret,'invalid_challenge_response'],[200,'{"challenge":"wrong"}','challenge_failed']] as const) {
+    const s=setup(async()=>({status,body}));await assert.rejects(s.events.subscribe('a',params));
+    assert.deepEqual(s.events.lastSubscription,{stage:'failed',reason,http_status:status});
+  }
+  const s=setup();await s.events.subscribe('a',params);assert.deepEqual(s.events.lastSubscription,{stage:'accepted',http_status:200});
+  await s.events.unsubscribe('a',params);assert.equal(s.subscriptions.size,0);assert.equal(s.events.lastSubscription?.stage,'accepted'); // Outcome evidence is retained after rollback, not an active-count claim.
+  await assert.rejects(s.events.subscribe('a',{...params,delivery:{...params.delivery,secret:'bad'}}));assert.deepEqual(s.events.lastSubscription,{stage:'failed',reason:'invalid_signing_secret'});
 });

@@ -58,3 +58,14 @@ test('real SQLite runtime persists bounded subscriptions, dry-run plans and deli
     privateFile(join(dir,'state.sqlite'));chmodSync(join(dir,'state.sqlite'),0o644);assert.throws(()=>privateFile(join(dir,'state.sqlite')));
   }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
+test('authenticated status reports sanitized subscribe failure after rollback',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'stats-status-test-'));chmodSync(dir,0o700);const store=new RuntimeStore(join(dir,'state.sqlite'));
+  const runtime=new SyntheticRuntime(store,()=> 'isolated-status-test',async()=>({status:403,body:'private response must not escape'}));
+  const params={name:'diagnostic.requested',arguments:{stream_id:'synthetic-smoke-v1'},delivery:{mode:'webhook',url:'https://fixture.invalid/private-callback',secret:'whsec_'+Buffer.alloc(32,9).toString('base64')}};
+  try{
+    await runtime.mcp({jsonrpc:'2.0',id:1,method:'events/subscribe',params});await runtime.mcp({jsonrpc:'2.0',id:2,method:'events/unsubscribe',params});
+    const status=await runtime.mcp({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'get_bridge_status',arguments:{}}});
+    const body=JSON.stringify(status);assert.ok(body.includes('callback_http_error'));assert.ok(body.includes('awaiting_subscription'));
+    for(const privateValue of [params.delivery.url,params.delivery.secret,'private response must not escape'])assert.ok(!body.includes(privateValue));
+  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});

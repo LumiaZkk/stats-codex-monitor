@@ -15,7 +15,7 @@ export const pinnedHttpsPost: SafePost = async (value, body, headers) => {
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.username || url.password || url.hash || (url.port && url.port !== '443') || isIP(url.hostname)) throw new Fault('invalid_callback');
   const deadline = AbortSignal.timeout(10_000);
-  const addresses = await Promise.race([lookup(url.hostname, { all: true }), new Promise<never>((_, reject) => deadline.addEventListener('abort', () => reject(new Error('timeout')), { once: true }))]);
+  const addresses = await Promise.race([lookup(url.hostname, { all: true }), new Promise<never>((_, reject) => deadline.addEventListener('abort', () => reject(new Fault('callback_timeout')), { once: true }))]);
   // Reject the whole DNS answer if any address is not explicitly allowed.
   if (addresses.length === 0 || !addresses.every(a => publicIPv4(a.address))) throw new Fault('non_public_callback');
   const chosen = addresses[0];

@@ -3,6 +3,21 @@ import { Fault, EVENT_NAME, filterSchema, eventSchema, digest, principal, valida
 export type Subscription = { id: string; owner: string; name: string; arguments: { stream_id: string }; url: string; secret: string; previousSecret?: string; rotationUntil?: number; expiresAt: number; verifiedUntil: number };
 export interface SubscriptionStore { get(id: string): Promise<Subscription | null>; put(s: Subscription): Promise<void>; remove(id: string): Promise<void>; }
 export type SafePost = (url: string, body: string, headers: Record<string, string>) => Promise<{ status: number; body: string }>;
+// Finite diagnostic vocabulary only. Never retain URL, secret, headers, response
+// body, request fields or arbitrary exception messages in diagnostic state.
+const safeReasons = ['invalid_event','invalid_schema','invalid_callback','invalid_signing_secret','invalid_ttl','replay_unsupported','access_revoked','authentication_required','non_public_callback','callback_transport_unverified','callback_timeout','callback_dns_failed','callback_tls_failed','callback_connection_failed','callback_transport_error','callback_http_error','invalid_challenge_response','challenge_failed','subscription_limit'] as const;
+type SafeReason = typeof safeReasons[number] | 'subscription_failed';
+export type SubscriptionDiagnostic = { stage: 'validating' | 'verifying' | 'storing' | 'accepted' | 'failed'; reason?: SafeReason; http_status?: number };
+function safeReason(error: unknown): SafeReason { return error instanceof Fault && (safeReasons as readonly string[]).includes(error.reason) ? error.reason as SafeReason : 'subscription_failed'; }
+export function callbackFault(error: unknown): Fault {
+  if (error instanceof Fault && ['invalid_callback','non_public_callback','callback_transport_unverified','callback_timeout'].includes(error.reason)) return new Fault(error.reason,503,-32015);
+  const code = (error as { code?: unknown })?.code;
+  const reason = ['ABORT_ERR','ETIMEDOUT'].includes(String(code)) || (error as { name?: unknown })?.name === 'TimeoutError' ? 'callback_timeout'
+    : ['ENOTFOUND','EAI_AGAIN'].includes(String(code)) ? 'callback_dns_failed'
+    : ['ERR_TLS_CERT_ALTNAME_INVALID','CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','SELF_SIGNED_CERT_IN_CHAIN','DEPTH_ZERO_SELF_SIGNED_CERT'].includes(String(code)) ? 'callback_tls_failed'
+    : ['ECONNREFUSED','ECONNRESET','EHOSTUNREACH','ENETUNREACH'].includes(String(code)) ? 'callback_connection_failed' : 'callback_transport_error';
+  return new Fault(reason,503,-32015);
+}
 export function signingKey(secret: unknown): Buffer {
   if (typeof secret !== 'string' || !/^whsec_[A-Za-z0-9+/]+={0,2}$/.test(secret)) throw new Fault('invalid_signing_secret');
   const raw = secret.slice(6); const decoded = Buffer.from(raw, 'base64');
@@ -25,6 +40,7 @@ function callbackUrl(value: unknown) {
 }
 export class Events {
   store: SubscriptionStore; post: SafePost; clock: () => number; access: (owner: string) => Promise<boolean>;
+  lastSubscription: SubscriptionDiagnostic | null = null;
   constructor(store: SubscriptionStore, post: SafePost, access: (owner: string) => Promise<boolean>, clock = Date.now) { this.store = store; this.post = post; this.clock = clock; this.access = access; }
   async identity(owner: string, value: unknown, subscribe: boolean) {
     principal(owner); if (!await this.access(owner)) throw new Fault('access_revoked', 403, -32003);
@@ -37,6 +53,11 @@ export class Events {
     return { p, url, id: 'sub_' + digest({ owner, url, name: p.name, arguments: p.arguments }) };
   }
   async subscribe(owner: string, value: unknown) {
+    this.lastSubscription = { stage:'validating' };
+    try { return await this.subscribeValidated(owner,value); }
+    catch (error) { this.lastSubscription = { stage:'failed', reason:safeReason(error), ...(this.lastSubscription.http_status === undefined ? {} : {http_status:this.lastSubscription.http_status}) }; throw error; }
+  }
+  private async subscribeValidated(owner: string, value: unknown) {
     const { p, url, id } = await this.identity(owner, value, true); const now = this.clock();
     if (p.ttlMs != null && (!Number.isSafeInteger(p.ttlMs) || p.ttlMs <= 0)) throw new Fault('invalid_ttl');
     const ttl = Math.min(p.ttlMs ?? 30 * 60_000, 30 * 60_000);
@@ -45,13 +66,19 @@ export class Events {
     if (previous && previous.secret !== sub.secret && previous.expiresAt > now) { sub.previousSecret = previous.secret; sub.rotationUntil = now + 60_000; }
     if (!previous || previous.verifiedUntil <= now || previous.secret !== sub.secret) {
       const challenge = randomUUID(); const body = JSON.stringify({ type: 'verification', challenge });
-      try {
-        const response = await this.post(url, body, signedHeaders('msg_verification_' + randomUUID(), sub, body, now));
-        const echoed = JSON.parse(response.body).challenge;
-        if (response.status < 200 || response.status >= 300 || typeof echoed !== 'string' || Buffer.byteLength(echoed) !== Buffer.byteLength(challenge) || !timingSafeEqual(Buffer.from(echoed), Buffer.from(challenge))) throw new Error('challenge_failed');
-      } catch { throw new Fault('challenge_failed', 503, -32015); }
+      this.lastSubscription = {stage:'verifying'};
+      let response: Awaited<ReturnType<SafePost>>;
+      try { response = await this.post(url, body, signedHeaders('msg_verification_' + randomUUID(), sub, body, now)); }
+      catch (error) { throw callbackFault(error); }
+      if (Number.isInteger(response.status) && response.status >= 100 && response.status <= 599) this.lastSubscription.http_status = response.status;
+      if (response.status < 200 || response.status >= 300) throw new Fault('callback_http_error',503,-32015);
+      let echoed: unknown;
+      try { echoed = JSON.parse(response.body).challenge; } catch { throw new Fault('invalid_challenge_response',503,-32015); }
+      if (typeof echoed !== 'string' || Buffer.byteLength(echoed) !== Buffer.byteLength(challenge) || !timingSafeEqual(Buffer.from(echoed), Buffer.from(challenge))) throw new Fault('challenge_failed',503,-32015);
     } else sub.verifiedUntil = previous.verifiedUntil;
+    this.lastSubscription = {stage:'storing',...(this.lastSubscription?.http_status === undefined ? {} : {http_status:this.lastSubscription.http_status})};
     await this.store.put(sub);
+    this.lastSubscription.stage = 'accepted';
     return { id, refreshBefore: new Date(sub.expiresAt).toISOString(), cursor: null, truncated: false };
   }
   async unsubscribe(owner: string, params: unknown) { const { id } = await this.identity(owner, params, false); await this.store.remove(id); return {}; }

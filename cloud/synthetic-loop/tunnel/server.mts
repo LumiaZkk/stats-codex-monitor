@@ -41,7 +41,7 @@ export class SyntheticRuntime {
     if ('result' in result && result.result && typeof result.result === 'object') {
       if (input.method === 'events/list') (result.result as { events: { description: string }[] }).events[0].description = 'A fixed synthetic diagnostic fixture was created on the private local test runtime. No real metrics or native commands.';
       if (input.method === 'tools/call' && input.params?.name === 'get_bridge_status') {
-        const data = { synthetic_only: true, identity_boundary: 'exclusive_personal_tunnel', callback_delivery: this.store.active(owner).length ? 'verified_subscription' : 'awaiting_subscription', same_dot_roundtrip: 'not_verified', native_execution: 'not_supported', transfer_mode: 'private_local_socket', observed_methods: await this.store.requests.methods(owner) };
+        const data = { synthetic_only: true, identity_boundary: 'exclusive_personal_tunnel', callback_delivery: this.store.active(owner).length ? 'verified_subscription' : 'awaiting_subscription', last_subscription_attempt: this.events.lastSubscription, same_dot_roundtrip: 'not_verified', native_execution: 'not_supported', transfer_mode: 'private_local_socket', observed_methods: await this.store.requests.methods(owner) };
         result.result = { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: false };
       }
     }

@@ -123,3 +123,19 @@ handling then stops its daemon even if the runner was killed. An uncatchable
 process kill or OS crash can leave an owner-only temporary directory behind;
 inspect and remove that specific test directory after all test processes stop.
 No runtime API key is in it, but it can contain the temporary subscription secrets.
+
+## Callback setup diagnostics
+
+The authenticated `get_bridge_status` tool includes `last_subscription_attempt` for
+the most recent subscribe attempt in this process. It contains only a finite
+stage/reason vocabulary and, when available, a numeric HTTP status. It never
+contains callback URLs, signing secrets, headers, request/response bodies or raw
+exception text. `accepted` records that the callback was verified and subscription
+stored at that time; `callback_delivery` separately reflects current active state,
+including later rollback or unsubscribe. A process restart clears the diagnostic.
+
+Callback address validation, DNS pinning, TLS verification and redirect refusal
+remain mandatory. Diagnose a categorized failure before changing transport code;
+never bypass those checks to make setup pass. Code changes require a clean runtime
+restart. The process-only key must be re-entered directly by the user; do not read
+it from a running process or add a persistent credential to avoid re-entry.
