@@ -4,9 +4,9 @@ A local-first macOS performance companion, built as a small native extension of 
 
 CPU, memory, swap and startup-disk monitoring stay on your Mac. Open **SD → Diagnose…** to review a bounded, sanitized snapshot and explicitly share it with dot, Codex, or another analyzer. No AI runs in the background, and the app never executes an analyzer's suggested commands.
 
-**Status: experimental source preview, version 0.2.0/build2.** This branch adds a synthetic manual file roundtrip and separately approved bounded local tests. GitHub CI covers Swift assertions and unsigned compilation; check the exact commit run. Native UI/consent/interruption validation is still required. This is not a notarized release.
+**Status: experimental source preview, version 0.3.0/build3.** This branch adds explicit synthetic diagnosis through an existing foreground private Tunnel runtime, automatic result retrieval, and separately approved bounded local tests. GitHub CI covers Swift assertions and unsigned compilation; check the exact commit run. Native UI/consent/interruption validation is still required. This is not a notarized release.
 
-[Synthetic native roundtrip preview](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
+[Native socket preview](docs/NATIVE_SOCKET_ROUNDTRIP.md) · [Manual test protocol](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
 
 ## What this adds
 
@@ -21,18 +21,18 @@ CPU, memory, swap and startup-disk monitoring stay on your Mac. Open **SD → Di
 
 ## Current analyzer integration
 
-There is **no automatic dot upload or one-click model execution** in this preview. Review the prompt, copy or save it, then submit it in your chosen analyzer yourself. Only that submission may consume your plan or incur charges.
+For **real monitoring data**, review the prompt, copy or save it, then submit it in your chosen analyzer yourself. The separate **SD → Synthetic diagnosis with dot** test sends only the fixed synthetic fixture through a user-selected, already-running private Tunnel runtime. Each explicit Send click can trigger the subscribed dot and consume model usage. Returned proposals are retrieved automatically; local actions always require a separate approval. The native app never reads a runtime key or starts the Tunnel.
 
 The export contains at most 90 readings from the last 30 minutes plus 12 recent alerts, capped at 64 KiB of JSON. It contains numeric measurements and fixed process categories, not raw process names, PIDs, command lines, environment variables, paths, serial numbers, account details or credentials. The prompt asks for advice without tools or automatic fixes; the app does not control the separate analyzer's tool permissions.
 
-Codex CLI `exec --sandbox read-only` is not a snapshot-only security boundary: it can still allow file inspection, and configuration/plugins vary. This preview deliberately uses an explicit export workflow until a supported, verifiable adapter can meet the same privacy contract. No private URL scheme, undocumented endpoint, credentials bridge, incoming command listener or remote shell is implemented.
+Codex CLI `exec --sandbox read-only` is not a snapshot-only security boundary: it can still allow file inspection, and configuration/plugins vary. This preview deliberately uses an explicit export workflow until a supported, verifiable adapter can meet the same privacy contract. The synthetic adapter uses a versioned owner-only Unix socket. No private URL scheme, undocumented ChatGPT endpoint, credential bridge, native incoming listener or remote shell is implemented.
 
 ## Build on a Mac
 
 Requires macOS 12 or later and full Xcode with its command-line tools selected. The fork keeps upstream Swift 5 project settings. Xcode 26.3 is the initial intended verification environment; compatibility is not yet certified.
 
 ```sh
-git clone --branch native-synthetic-roundtrip https://github.com/LumiaZkk/stats-codex-monitor.git
+git clone --branch native-socket-roundtrip https://github.com/LumiaZkk/stats-codex-monitor.git
 cd stats-codex-monitor
 ./scripts/build-diagnostics.sh
 ```
@@ -62,7 +62,7 @@ Do not use the upstream Makefile's release workflow: it is retained for attribut
 
 This is an analyzer-neutral companion, not an autonomous optimizer. The first release favors low-rate, interpretable evidence over high-frequency graphs. APFS free-space reporting can differ from Storage settings because of purgeable space. Top-process CPU values come from upstream `ps` and are process lifetime averages, not guaranteed five-minute interval samples. Native controls for optional metrics may still be visible but show no samples. Settings remain local and user controlled.
 
-Future adapters should preserve preview/consent, bounded data, no background LLM requests, explicit approval of consequential recommendations, and independent local execution approval. A future transport is not an implemented feature.
+Future adapters should preserve preview/consent, bounded data, no background LLM requests, explicit approval of consequential recommendations, and independent local execution approval. The foreground synthetic transport is experimental; real telemetry transmission, unattended runtime startup and general-purpose execution are not implemented.
 
 ## Upstream and license
 
