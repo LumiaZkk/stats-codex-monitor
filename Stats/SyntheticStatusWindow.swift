@@ -33,17 +33,23 @@ private final class SyntheticCardDocument: NSView {
     init(_ sections: [SyntheticSection]) { cards = sections.map(SyntheticCard.init); super.init(frame: .zero); cards.forEach(addSubview) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func reflow(width: CGFloat) {
+        guard width.isFinite, width > 4 else { return }
         var y: CGFloat = 0
         for card in cards {
             let height = card.reflow(width: width - 4)
             card.frame = NSRect(x: 0, y: y, width: width - 4, height: height)
             y += height + 12
         }
-        frame.size = NSSize(width: width, height: max(1, y - 12))
+        let size = NSSize(width: width, height: max(1, y - 12))
+        if frame.size != size { frame.size = size }
     }
 }
 private final class SyntheticCardScroll: NSScrollView {
+    private var layingOutDocument = false
     override func tile() {
+        guard !layingOutDocument else { return }
+        layingOutDocument = true
+        defer { layingOutDocument = false }
         super.tile()
         (documentView as? SyntheticCardDocument)?.reflow(width: contentView.bounds.width)
     }
