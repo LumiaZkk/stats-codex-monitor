@@ -240,13 +240,13 @@ final class RealOptimizationController: NSObject {
         if var candidate, let fresh { candidate.usage = fresh; self.candidate = candidate }
         try createReceipt(outcome: "approved", approved: true)
         if plan.recommendsQuit {
-            guard let candidate = self.candidate else { throw RealOptimizationError.invalid }
+            guard let candidate = self.candidate, let endpoint else { throw RealOptimizationError.invalid }
             try self.gate?.takeQuitPermission()
             // Commit authorization + attempted request before the only side-effect API.
             try updateReceipt { $0.dispatchAttempted = true; $0.dispatchOutcomeKnown = false; $0.outcome = "quit_dispatch_pending" }
             let validUntil = try RoundtripJSON.date(candidate.usage.observedAt).addingTimeInterval(5)
             let accepted: Bool
-            do { accepted = try probe.requestNormalQuit(candidate.identity, notAfter: validUntil) }
+            do { accepted = try probe.requestNormalQuit(candidate.identity, notAfter: validUntil, protecting: endpoint.descriptor.pid) }
             catch { finish("precondition_failed"); return }
             try updateReceipt { $0.dispatchOutcomeKnown = true; $0.quitRequested = accepted; $0.outcome = accepted ? "quit_requested" : "quit_dispatch_refused" }
             if !accepted { finish("precondition_failed"); return }

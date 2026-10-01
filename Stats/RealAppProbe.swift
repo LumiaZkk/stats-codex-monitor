@@ -54,7 +54,7 @@ enum RealAppPolicy {
     static func allowed(bundleID: String, name: String, bundlePath: String, home: String) -> Bool {
         let lower = (bundleID + " " + name).lowercased()
         guard !bundleID.hasPrefix("com.apple."), !bundleID.hasPrefix("com.openai."),
-              !["chatgpt", "codex", "tunnel", "statsdiagnostics", "stats diagnostics", "terminal", "iterm", "warp", "ssh", "remote desktop"].contains(where: lower.contains) else { return false }
+              !["chatgpt", "codex", "tunnel", "statsdiagnostics", "stats diagnostics", "terminal", "iterm", "warp", "ghostty", "wezterm", "kitty", "alacritty", "tabby", "hyper", "ssh", "remote desktop"].contains(where: lower.contains) else { return false }
         let root = "/Applications/", personal = home + "/Applications/"
         guard bundlePath.hasPrefix(root) || bundlePath.hasPrefix(personal), bundlePath.hasSuffix(".app"),
               !bundlePath.contains("/Contents/"), !bundlePath.contains("/Utilities/") else { return false }
@@ -66,7 +66,7 @@ protocol RealAppProbing {
     func candidates() -> [RealAppIdentity]
     func identity(pid: Int32) throws -> RealAppIdentity
     func counter(for identity: RealAppIdentity) throws -> RealAppCounter
-    func requestNormalQuit(_ identity: RealAppIdentity, notAfter: Date) throws -> Bool
+    func requestNormalQuit(_ identity: RealAppIdentity, notAfter: Date, protecting runtimePID: Int32) throws -> Bool
     func hasExited(_ identity: RealAppIdentity) -> Bool
 }
 
@@ -117,7 +117,20 @@ final class RealAppProbe: RealAppProbing {
         return RealAppCounter(user: info.pti_total_user, system: info.pti_total_system, resident: info.pti_resident_size,
                               uptime: ProcessInfo.processInfo.systemUptime, date: Date())
     }
-    func requestNormalQuit(_ expected: RealAppIdentity, notAfter: Date) throws -> Bool {
+    func isAncestor(_ target: Int32, of runtimePID: Int32) throws -> Bool {
+        var current = runtimePID, seen: Set<Int32> = []
+        for _ in 0..<64 {
+            if current == target { return true }
+            if current <= 1 { return false }
+            guard seen.insert(current).inserted else { throw RealOptimizationError.changed }
+            var info = proc_bsdinfo()
+            guard proc_pidinfo(current, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == Int32(MemoryLayout<proc_bsdinfo>.size), info.pbi_pid == UInt32(current) else { throw RealOptimizationError.changed }
+            current = Int32(info.pbi_ppid)
+        }
+        throw RealOptimizationError.changed
+    }
+    func requestNormalQuit(_ expected: RealAppIdentity, notAfter: Date, protecting runtimePID: Int32) throws -> Bool {
+        guard try !isAncestor(expected.pid, of: runtimePID) else { throw RealOptimizationError.ineligible }
         guard let app = NSRunningApplication(processIdentifier: expected.pid), !app.isTerminated,
               try identity(pid: expected.pid) == expected, !app.isTerminated else { throw RealOptimizationError.changed }
         // One normal quit request. No forceTerminate, signal, AppleScript, shell or retries.

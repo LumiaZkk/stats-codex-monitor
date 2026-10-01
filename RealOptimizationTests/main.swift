@@ -63,7 +63,7 @@ var stale = RealExecutionGate(manifest: manifest)
 rejects("stale fresh precondition") { try stale.approve(displayed: manifest, plan: plan, candidate: candidate, fresh: usage, now: now.addingTimeInterval(6)) }
 var low = RealExecutionGate(manifest: manifest)
 rejects("usage fell below threshold") { try low.approve(displayed: manifest, plan: plan, candidate: candidate, fresh: RealAppUsage(cpuBasisPoints: 100, residentBytes: 1024, intervalMS: 2000, observedAt: usage.observedAt), now: now) }
-for blocked in ["com.apple.finder", "com.openai.chat", "com.vendor.codex", "io.statsdiagnostics", "com.iterm2", "app.warp"] {
+for blocked in ["com.apple.finder", "com.openai.chat", "com.vendor.codex", "io.statsdiagnostics", "com.iterm2", "app.warp", "com.mitchellh.ghostty", "com.github.wez.wezterm", "org.alacritty"] {
     check(!RealAppPolicy.allowed(bundleID: blocked, name: "App", bundlePath: "/Applications/App.app", home: "/Users/test"), "Protected app excluded")
 }
 check(!RealAppPolicy.allowed(bundleID: "com.example.app", name: "App", bundlePath: "/tmp/App.app", home: "/Users/test"), "Unknown install location excluded")
@@ -108,6 +108,8 @@ check(RealReceiptStorage.pruned(recovered, at: now.addingTimeInterval(7 * 86400 
 try FileManager.default.removeItem(at: storeURL)
 // Read-only Darwin integration: two actual kernel counter reads, no target app or quit call.
 let nativeProbe = RealAppProbe()
+let protectsRuntime = try nativeProbe.isAncestor(getpid(), of: getpid())
+check(protectsRuntime, "Runtime process itself is never an allowed quit target")
 let tableBefore = nativeProbe.processTable()
 Thread.sleep(forTimeInterval: 2)
 let tableAfter = nativeProbe.processTable()
