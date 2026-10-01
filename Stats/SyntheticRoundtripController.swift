@@ -492,6 +492,10 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
             try state.finish(outcome: "interrupted_\(reason)", after: [], at: Date())
             try storage.save(state)
         } catch { storageFailure = "Local check interrupted; receipt storage unavailable." }
+        // Refresh a visible test after sleep/pause without reopening a dismissed window.
+        if reason != "app_termination", window?.isVisible == true {
+            if storageFailure == nil { showReceipt() } else { reviewCurrent() }
+        }
     }
     func maintain(at now: Date) {
         let previousCount = state.receipts.count
