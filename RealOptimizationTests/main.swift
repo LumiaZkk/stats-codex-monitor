@@ -85,4 +85,21 @@ rejects("unknown socket operation") { _ = try RealSocketStatus.command("execute"
 let localOnly = ["bundlePath", "executablePath", "codeHash", "startedSeconds", "pid", "teamID"]
 let wire = try RealJSON.encode(candidate.wire())
 check(localOnly.allSatisfy { !wire.contains("\"" + $0 + "\"") }, "Wire target has no local identity fields")
+let receiptEnvelope = try RoundtripJSON.object(Data(contentsOf: root.appendingPathComponent("real-receipt-v1.json")))
+let compactReceipt = try RealSocketStatus.command("receipt_real", request: request, endpointID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", receipt: receiptEnvelope, server: (plan.serverID, plan.serverHash))
+let compactObject = try RoundtripJSON.object(compactReceipt)
+check(compactObject["client_request"] == nil && compactObject["client_request_hash"] as? String == request.hash, "Receipt uses compact immutable binding")
+check(compactReceipt.count < 16384, "Receipt fits complete frame")
+var unavailable = before.json; unavailable["host_cpu_basis_points"] = NSNull()
+rejects("timestamp claims absent CPU value") { _ = try RealHostSnapshot.parse(unavailable, at: now) }
+let storeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+let store = RealReceiptStorage(directory: storeURL)
+var durable = RealLocalReceipt(id: UUID().uuidString.lowercased(), requestID: request.id, clientRequestHash: request.hash, planID: plan.id, planHash: plan.hash, manifest: manifest, targetFingerprint: identity.fingerprint, appName: "Fixture", startedAt: RoundtripJSON.timestamp(now), outcome: "quit_dispatch_pending", quitRequested: false, exitConfirmed: false, before: before, beforeUsage: usage)
+durable.dispatchAttempted = true; durable.dispatchOutcomeKnown = false
+try store.save([durable])
+let recovered = try store.load(at: now.addingTimeInterval(3))
+check(recovered.count == 1 && recovered[0].outcome == "interrupted_by_restart", "Restart never resumes a saved approval")
+check(recovered[0].dispatchAttempted && !recovered[0].dispatchOutcomeKnown, "Unknown dispatch survives restart honestly")
+check(RealReceiptStorage.pruned(recovered, at: now.addingTimeInterval(7 * 86400 + 1)).isEmpty, "Real receipts expire after7days")
+try FileManager.default.removeItem(at: storeURL)
 print("PASS real optimization: \(assertions) assertions; no process quit or network was invoked")
