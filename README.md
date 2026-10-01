@@ -4,9 +4,9 @@ A local-first macOS performance companion, built as a small native extension of 
 
 CPU, memory, swap and startup-disk monitoring stay on your Mac. Open **SD → Diagnose…** to review a bounded, sanitized snapshot and explicitly share it with dot, Codex, or another analyzer. No AI runs in the background, and the app never executes an analyzer's suggested commands.
 
-**Status: experimental source preview, version 0.3.0/build3.** This branch adds explicit synthetic diagnosis through an existing foreground private Tunnel runtime, automatic result retrieval, and separately approved bounded local tests. GitHub CI covers Swift assertions and unsigned compilation; check the exact commit run. Native UI/consent/interruption validation is still required. This is not a notarized release.
+**Status: experimental source preview, version 0.4.0/build4.** This branch removes temporary-folder selection: explicit synthetic diagnosis automatically discovers the live foreground runtime, retrieves its result, and preserves separately approved bounded local tests. GitHub CI covers Swift assertions and unsigned compilation; check the exact commit run. Native UI/consent/interruption validation is still required. This is not a notarized release.
 
-[Native socket preview](docs/NATIVE_SOCKET_ROUNDTRIP.md) · [Manual test protocol](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
+[Automatic runtime discovery](docs/NATIVE_RUNTIME_DISCOVERY.md) · [Native socket preview](docs/NATIVE_SOCKET_ROUNDTRIP.md) · [Manual test protocol](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
 
 ## What this adds
 
@@ -21,7 +21,7 @@ CPU, memory, swap and startup-disk monitoring stay on your Mac. Open **SD → Di
 
 ## Current analyzer integration
 
-For **real monitoring data**, review the prompt, copy or save it, then submit it in your chosen analyzer yourself. The separate **SD → Synthetic diagnosis with dot** test sends only the fixed synthetic fixture through a user-selected, already-running private Tunnel runtime. Each explicit Send click can trigger the subscribed dot and consume model usage. Returned proposals are retrieved automatically; local actions always require a separate approval. The native app never reads a runtime key or starts the Tunnel.
+For **real monitoring data**, review the prompt, copy or save it, then submit it in your chosen analyzer yourself. The separate **SD → Synthetic diagnosis with dot** test sends only the fixed synthetic fixture through a automatically discovered, already-running private Tunnel runtime. Each explicit Send click can trigger the subscribed dot and consume model usage. Returned proposals are retrieved automatically; local actions always require a separate approval. The native app never reads a runtime key or starts the Tunnel.
 
 The export contains at most 90 readings from the last 30 minutes plus 12 recent alerts, capped at 64 KiB of JSON. It contains numeric measurements and fixed process categories, not raw process names, PIDs, command lines, environment variables, paths, serial numbers, account details or credentials. The prompt asks for advice without tools or automatic fixes; the app does not control the separate analyzer's tool permissions.
 
@@ -32,7 +32,7 @@ Codex CLI `exec --sandbox read-only` is not a snapshot-only security boundary: i
 Requires macOS 12 or later and full Xcode with its command-line tools selected. The fork keeps upstream Swift 5 project settings. Xcode 26.3 is the initial intended verification environment; compatibility is not yet certified.
 
 ```sh
-git clone --branch native-socket-roundtrip https://github.com/LumiaZkk/stats-codex-monitor.git
+git clone --branch native-runtime-discovery https://github.com/LumiaZkk/stats-codex-monitor.git
 cd stats-codex-monitor
 ./scripts/build-diagnostics.sh
 ```

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D20000000000000000000008 /* SyntheticRuntimeDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */; };
 		D20000000000000000000007 /* SyntheticSocketProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000007 /* SyntheticSocketProtocol.swift */; };
 		D20000000000000000000006 /* SyntheticSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000006 /* SyntheticSocketTransport.swift */; };
 		D20000000000000000000005 /* SyntheticRoundtripController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000005 /* SyntheticRoundtripController.swift */; };
@@ -538,6 +539,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticRuntimeDiscovery.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000007 /* SyntheticSocketProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticSocketProtocol.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000006 /* SyntheticSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticSocketTransport.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000005 /* SyntheticRoundtripController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticRoundtripController.swift; sourceTree = SOURCE_ROOT; };
@@ -1096,6 +1098,7 @@
 				9A5B1CB3229E72A7008B9D3C /* Supporting Files */,
 				D10000000000000000000004 /* SyntheticRoundtripCore.swift */,
 				D10000000000000000000005 /* SyntheticRoundtripController.swift */,
+				D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */,
 				D10000000000000000000007 /* SyntheticSocketProtocol.swift */,
 				D10000000000000000000006 /* SyntheticSocketTransport.swift */,
 				D10000000000000000000002 /* DiagnosticsCore.swift */,
@@ -2226,6 +2229,7 @@
 			files = (
 				D20000000000000000000004 /* SyntheticRoundtripCore.swift in Sources */,
 				D20000000000000000000005 /* SyntheticRoundtripController.swift in Sources */,
+				D20000000000000000000008 /* SyntheticRuntimeDiscovery.swift in Sources */,
 				D20000000000000000000007 /* SyntheticSocketProtocol.swift in Sources */,
 				D20000000000000000000006 /* SyntheticSocketTransport.swift in Sources */,
 				D20000000000000000000002 /* DiagnosticsCore.swift in Sources */,
@@ -3144,7 +3148,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
-				MARKETING_VERSION = 0.3.0;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.LumiaZkk.StatsDiagnostics;
 				PRODUCT_NAME = "Stats Diagnostics";
@@ -3181,7 +3185,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
-				MARKETING_VERSION = 0.3.0;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.LumiaZkk.StatsDiagnostics;
 				PRODUCT_NAME = "Stats Diagnostics";

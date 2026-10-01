@@ -23,6 +23,37 @@ if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--socket-pro
     }
 }
 
+if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--discovery-probe" {
+    let expectation = CommandLine.arguments[3]
+    do {
+        let cancellation = SyntheticSocketCancellation()
+        if expectation == "cancel" { DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { cancellation.cancel() } }
+        let endpoints = try SyntheticRuntimeDiscovery.find(in: URL(fileURLWithPath: CommandLine.arguments[2]), cancellation: cancellation)
+        switch expectation {
+        case "none": guard endpoints.isEmpty else { exit(11) }
+        case "one": guard endpoints.count == 1 else { exit(12) }
+        case "two": guard endpoints.count == 2 else { exit(13) }
+        case "v2":
+            guard endpoints.count == 1 else { exit(14) }
+            let bytes = try endpoints[0].exchange(.diagnose, request: SyntheticClientRequest.create(at: Date()))
+            guard bytes == Data("{\"ack\":true}".utf8) else { exit(15) }
+        case "replace":
+            guard let endpoint = endpoints.first else { exit(16) }
+            let file = endpoint.registry.appendingPathComponent(endpoint.descriptor.instanceID + ".json")
+            try endpoint.bytes.write(to: file, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            do { _ = try endpoint.exchange(.diagnose, request: SyntheticClientRequest.create(at: Date())); exit(17) }
+            catch { exit(0) }
+        default: exit(18)
+        }
+        exit(0)
+    } catch {
+        if expectation == "failure" { exit(0) }
+        if expectation == "cancel", case SyntheticSocketError.cancelled = error { exit(0) }
+        print(error.localizedDescription); exit(19)
+    }
+}
+
 
 var passed = 0
 func check(_ condition: @autoclosure () -> Bool, _ label: String) {
@@ -325,3 +356,51 @@ let runtimeSocketGolden = try Data(contentsOf: URL(fileURLWithPath: "Diagnostics
 let decodedRuntimeSocketGolden = try SyntheticSocketProtocol.response(runtimeSocketGolden, request: goldenRequest, at: testNow)
 check(decodedRuntimeSocketGolden.status == .proposed && decodedRuntimeSocketGolden.binding == socketBinding, "Actual runtime-generated socket golden fixture is compatible")
 print("PASS: \(passed) total production assertions including shared runtime socket vector")
+
+// Discovery envelope validation and persisted request-to-runtime binding.
+let instanceID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+let scopeHash = String(repeating: "a", count: 64)
+let descriptorObject: [String: Any] = ["schema_version": 1, "kind": "stats_runtime_descriptor", "protocol_version": 2,
+    "instance_id": instanceID, "uid": Int(geteuid()), "runtime_pid": Int(getpid()), "started_at": "2026-09-30T09:15:00.000Z",
+    "expires_at": "2026-09-30T10:15:00.000Z", "scope_hash": scopeHash, "socket_path": "/tmp/stats-fixture/native.sock"]
+func descriptorBytes(_ change: (inout [String: Any]) -> Void = { _ in }) throws -> Data {
+    var value = descriptorObject; change(&value); return try JSONSerialization.data(withJSONObject: value)
+}
+let descriptor = try SyntheticRuntimeDescriptor.parse(descriptorBytes(), at: testNow)
+check(descriptor.instanceID == instanceID && descriptor.pid == getpid(), "Strict private descriptor binds process/start instance")
+rejects("descriptor unknown fields") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["api_key"] = "not-a-key" }, at: testNow) }
+rejects("descriptor wrong UID") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["uid"] = Int(geteuid()) + 1 }, at: testNow) }
+rejects("descriptor fractional PID") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["runtime_pid"] = 1.5 }, at: testNow) }
+rejects("descriptor legacy protocol") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["protocol_version"] = 1 }, at: testNow) }
+rejects("descriptor expired") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["expires_at"] = "2026-09-30T09:17:00.000Z" }, at: testNow) }
+rejects("descriptor extended lifetime") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["expires_at"] = "2026-09-30T11:15:00.000Z" }, at: testNow) }
+rejects("descriptor relative socket") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["socket_path"] = "relative/native.sock" }, at: testNow) }
+rejects("descriptor traversal socket") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["socket_path"] = "/tmp/a/../native.sock" }, at: testNow) }
+rejects("descriptor arbitrary filename") { _ = try SyntheticRuntimeDescriptor.parse(descriptorBytes { $0["socket_path"] = "/tmp/anything.sock" }, at: testNow) }
+let nonce = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+var helloBody = descriptorObject; helloBody.removeValue(forKey: "socket_path"); helloBody["schema_version"] = 2
+helloBody["kind"] = "stats_runtime_hello"; helloBody["nonce"] = nonce
+try descriptor.verifyHello(JSONSerialization.data(withJSONObject: ["result": helloBody]), nonce: nonce)
+check(true, "Hello binds challenge, scope, PID and process startup identity")
+helloBody["nonce"] = instanceID
+rejects("hello stale challenge") { try descriptor.verifyHello(JSONSerialization.data(withJSONObject: ["result": helloBody]), nonce: nonce) }
+helloBody["nonce"] = nonce; helloBody["instance_id"] = nonce
+rejects("hello PID reuse with new startup UUID") { try descriptor.verifyHello(JSONSerialization.data(withJSONObject: ["result": helloBody]), nonce: nonce) }
+let commandV2 = try RoundtripJSON.object(SyntheticSocketProtocol.command(.diagnose, request: goldenRequest, at: testNow, expectedInstanceID: instanceID))
+check(Set(commandV2.keys) == ["schema_version", "op", "expected_instance_id", "client_request"] && commandV2["expected_instance_id"] as? String == instanceID, "Every discovered command pins runtime instance before mutation")
+var boundState = LocalRoundtripState()
+_ = try boundState.create(at: RoundtripJSON.date(goldenRequest.createdAt), id: goldenRequest.clientRequestID)
+try boundState.bindRuntime(instanceID); try boundState.bindRuntime(instanceID)
+rejects("pending request cannot switch runtime") { try boundState.bindRuntime(nonce) }
+try localStorage.save(boundState)
+let restoredBinding = try localStorage.load(at: testNow)
+check(restoredBinding.runtimeInstanceID == instanceID && restoredBinding.phase == .waiting, "Runtime binding survives app restart without auto transport")
+try boundState.cancel(at: testNow)
+_ = try boundState.create(at: testNow)
+check(boundState.runtimeInstanceID == nil, "New request clears previous runtime binding")
+print("PASS: \(passed) total production assertions including runtime discovery")
+
+let discoveryGolden = try SyntheticRuntimeDescriptor.parse(Data(contentsOf: URL(fileURLWithPath: "DiagnosticsTests/Fixtures/runtime-descriptor-v1.json")), at: RoundtripJSON.date("2026-10-01T06:01:00.000Z"), owner: 501)
+try discoveryGolden.verifyHello(Data(contentsOf: URL(fileURLWithPath: "DiagnosticsTests/Fixtures/runtime-hello-v2.json")), nonce: nonce)
+check(discoveryGolden.instanceID == instanceID && discoveryGolden.pid == 42424, "Runtime-produced descriptor and hello golden bytes interoperate")
+print("PASS: \(passed) total production assertions including shared discovery vectors")
