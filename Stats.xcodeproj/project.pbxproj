@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		D20000000000000000000008 /* SyntheticRuntimeDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */; };
 		D20000000000000000000009 /* DiagnosticText.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000009 /* DiagnosticText.swift */; };
+		D2000000000000000000000B /* SyntheticStatusWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000000B /* SyntheticStatusWindow.swift */; };
+		D2000000000000000000000A /* SyntheticExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000000A /* SyntheticExperience.swift */; };
 		D20000000000000000000007 /* SyntheticSocketProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000007 /* SyntheticSocketProtocol.swift */; };
 		D20000000000000000000006 /* SyntheticSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000006 /* SyntheticSocketTransport.swift */; };
 		D20000000000000000000005 /* SyntheticRoundtripController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000005 /* SyntheticRoundtripController.swift */; };
@@ -542,6 +544,8 @@
 /* Begin PBXFileReference section */
 		D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticRuntimeDiscovery.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000009 /* DiagnosticText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/DiagnosticText.swift; sourceTree = SOURCE_ROOT; };
+		D1000000000000000000000B /* SyntheticStatusWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticStatusWindow.swift; sourceTree = SOURCE_ROOT; };
+		D1000000000000000000000A /* SyntheticExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticExperience.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000007 /* SyntheticSocketProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticSocketProtocol.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000006 /* SyntheticSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticSocketTransport.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000005 /* SyntheticRoundtripController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticRoundtripController.swift; sourceTree = SOURCE_ROOT; };
@@ -1102,6 +1106,8 @@
 				D10000000000000000000005 /* SyntheticRoundtripController.swift */,
 				D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */,
 				D10000000000000000000009 /* DiagnosticText.swift */,
+				D1000000000000000000000B /* SyntheticStatusWindow.swift */,
+				D1000000000000000000000A /* SyntheticExperience.swift */,
 				D10000000000000000000007 /* SyntheticSocketProtocol.swift */,
 				D10000000000000000000006 /* SyntheticSocketTransport.swift */,
 				D10000000000000000000002 /* DiagnosticsCore.swift */,
@@ -2234,6 +2240,8 @@
 				D20000000000000000000005 /* SyntheticRoundtripController.swift in Sources */,
 				D20000000000000000000008 /* SyntheticRuntimeDiscovery.swift in Sources */,
 				D20000000000000000000009 /* DiagnosticText.swift in Sources */,
+				D2000000000000000000000B /* SyntheticStatusWindow.swift in Sources */,
+				D2000000000000000000000A /* SyntheticExperience.swift in Sources */,
 				D20000000000000000000007 /* SyntheticSocketProtocol.swift in Sources */,
 				D20000000000000000000006 /* SyntheticSocketTransport.swift in Sources */,
 				D20000000000000000000002 /* DiagnosticsCore.swift in Sources */,

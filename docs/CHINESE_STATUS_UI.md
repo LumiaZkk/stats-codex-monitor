@@ -13,3 +13,11 @@ All remote input remains the fixed synthetic CPU 92% / normal memory / 80 GiB fi
 `./scripts/test-diagnostics.sh` runs production core/control-state assertions, actual Darwin socket/discovery cases, then AppKit smoke tests in English and Simplified Chinese. UI tests use isolated temporary state and injected empty discovery; they perform no network exchange, process launch, or real collection. They verify immediate click feedback, disabled duplicate submission, cancellation against a late discovery completion, persistent window identity, and receipt labeling. Actual AppKit renders are uploaded by CI for visual review.
 
 Final interactive acceptance still requires the installed app: open SD, send while disconnected, check help, connect the approved foreground runtime, submit one synthetic request, wait for a proposal, review/cancel, and separately approve an allowed local test. Check app-language changes after relaunch, window resizing/details, close/reopen while waiting, and the displayed local receipt. No installation, runtime restart, merge, or release is part of this source change.
+
+## Meaningful guided experience (build6)
+
+The simulation now shows the returned model summary as inert, unverified primary text. Separate action cards explain rationale, actual impact, duration, cancellation limits, and what cannot be inferred. The explicit approval dialog repeats only the exact local actions. Running status reports elapsed test time without claiming a model percentage or an optimization.
+
+The result translates recognized local action outcomes into plain language, distinguishes completed observation from improvement, explains cached/fresh/missing readings, and offers SD → History as the next step for real local data. Missing timestamps or unavailable readings never appear as healthy values. Reused/stale readings cannot count as new evidence. Protocol and permissions remain unchanged; no real telemetry is uploaded.
+
+AppKit render QA includes proposal, scrolled action rationale, approval dialog, running state, completed result, next step, and interruption in both languages. These fixture-based renders and technical tests do not establish that the installed experience is usable or that a real diagnosis/optimization occurred. Review the preview, then conduct user-facing acceptance separately.

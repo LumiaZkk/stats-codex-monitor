@@ -26,7 +26,18 @@ enum DiagnosticText {
         }
         return text("The operation could not finish. Review the technical details and try again.", "操作未完成。请查看技术详情后重试。")
     }
+    static func safeUntrusted(_ text: String) -> String {
+        // Render markup as text; neutralize invisible direction/control overrides.
+        String(String.UnicodeScalarView(text.unicodeScalars.map { scalar in
+            if (CharacterSet.controlCharacters.contains(scalar) && scalar != "\n" && scalar != "\t") || (0x202A...0x202E).contains(scalar.value) || (0x2066...0x2069).contains(scalar.value) { return UnicodeScalar(0xFFFD)! }
+            return scalar
+        }))
+    }
     static func reading(_ value: LocalMetricReading) -> String {
+        guard value.freshness != .unavailable, let numeric = value.value, numeric.isFinite,
+              let stamp = value.observedAt, let date = try? RoundtripJSON.date(stamp) else {
+            return text("No usable reading or timestamp", "暂无可用读数或采样时间")
+        }
         let freshness: String
         switch value.freshness {
         case .fresh: freshness = text("fresh", "有效")
@@ -42,7 +53,7 @@ enum DiagnosticText {
                 number = valueNumber == 4 ? text("critical", "严重") : valueNumber == 2 ? text("warning", "警告") : valueNumber == 1 ? text("normal", "正常") : text("unknown", "未知")
             }
         } else { number = "—" }
-        return "\(metric(value.metric)): \(number) · \(freshness) · \(value.observedAt ?? text("no timestamp", "无采样时间"))"
+        return "\(number) · \(freshness) · " + text("sampled at ", "采样于 ") + DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .medium)
     }
     static func outcome(_ code: String) -> String {
         switch code {

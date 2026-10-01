@@ -8,9 +8,8 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
     private let capture: Capture
     private let discover: (SyntheticSocketCancellation) throws -> [SyntheticRuntimeEndpoint]
     private var state = LocalRoundtripState()
-    private var window: NSWindow?
-    private var detailScroll: NSScrollView?
-    private var detailsExpanded = false
+    private let statusWindow = SyntheticStatusWindow()
+    private var window: NSWindow? { statusWindow.window }
     private var lastConnectionError: Error?
     private var displayedManifestHash: String?
     private var generation = UUID()
@@ -24,7 +23,7 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
     private var pollingTimer: Timer?
     private var exchangeGeneration = UUID()
     private var exchangeInFlight = false
-    private var socketMessage = DiagnosticText.text("Send a synthetic test to check the connection with dot.", "发送一次合成测试，检查与 dot 的连接。")
+    private var socketMessage = DiagnosticText.text("See a simulated suggestion, decide whether to approve a local test, then view its result.", "看一份模拟建议，由你决定是否批准本地测试，最后查看结果。")
     private var socketRequestID: String?
     private var socketBinding: SyntheticSocketBinding?
     private var approvalCheckInFlight = false
@@ -242,14 +241,9 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
         if state.phase == .executing { showRunning(); return }
         if state.phase == .reviewing, let proposal = state.proposal {
             displayedManifestHash = proposal.manifestHash
-            let actions = proposal.actions.enumerated().map { "\($0.offset + 1). \($0.element.description)" }.joined(separator: "\n\n")
-            let text = DiagnosticText.text(
-                "Proposal received. Review these exact local test actions before approving:\n\n", "建议已收到。请先审核以下本地测试操作：\n\n") + actions + "\n\n" + DiagnosticText.text(
-                "Origin is unverified: hashes check content and request binding, not the author. The cloud proposal is a simulation (dry_run=true). Approving here separately permits only the actions listed above. Opening Activity Monitor is not a performance optimization. Real readings and receipts stay on this Mac.",
-                "建议来源未经身份认证：哈希只校验内容和请求对应关系，不能证明作者。云端建议仍为模拟（dry_run=true）；在此批准，只允许执行上述本地操作。打开活动监视器不代表性能已优化。真实读数和回执仅保留在本机。")
-            let details = DiagnosticText.text("Untrusted summary (text only):", "未经信任的摘要（仅文本）：") + "\n" + proposal.untrustedSummary + "\n\nClient request: \(proposal.clientRequestID)\nExpires: \(proposal.expiresAt)\nProposal SHA-256: \(proposal.proposalHash)\nLocal manifest SHA-256: \(proposal.manifestHash)"
-            present(title: DiagnosticText.text("Proposal ready for review", "建议已就绪，请审核"), text: text,
-                    buttons: [(DiagnosticText.text("Review and approve…", "审核并批准…"), #selector(authorize)), (DiagnosticText.text("Cancel request", "取消请求"), #selector(cancel))], details: details)
+            let model = SyntheticExperience.proposal(proposal)
+            let details = "Client request: \(proposal.clientRequestID)\nExpires: \(proposal.expiresAt)\nProposal SHA-256: \(proposal.proposalHash)\nLocal manifest SHA-256: \(proposal.manifestHash)"
+            presentExperience(model, buttons: [(DiagnosticText.text("Review local approval…", "查看并决定是否批准…"), #selector(authorize)), (DiagnosticText.text("Do not run", "不执行"), #selector(cancel))], details: details)
             return
         }
         displayedManifestHash = nil
@@ -268,7 +262,7 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
         } else if runtimeEndpoint != nil {
             title = DiagnosticText.text("Last connection check passed", "上次连接检查已通过")
         } else {
-            title = DiagnosticText.text("Test the connection with dot", "测试与 dot 的连接")
+            title = DiagnosticText.text("Try a guided simulated diagnosis", "体验一次模拟诊断")
         }
         let explanation = socketMessage + "\n\n" + (active ? DiagnosticText.text(
             "Results are checked every 5 seconds. Closing the window keeps waiting; Cancel stops this request. Local actions will always need separate approval.",
@@ -352,10 +346,7 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
               let proposal = state.proposal, proposal.manifestHash == hash else {
             show(RoundtripError.invalid("The displayed manifest is no longer current or is already being checked")); return
         }
-        let alert = NSAlert()
-        alert.messageText = DiagnosticText.text("Approve these local test actions?", "批准这些本地测试操作？")
-        alert.informativeText = DiagnosticText.text("Synthetic suggestion; origin unverified. Approval applies only to:\n\n", "这是合成建议，来源未经身份认证。本次仅批准：\n\n") + proposal.actions.map(\.description).joined(separator: "\n\n") + DiagnosticText.text("\n\nNo performance optimization is performed. Real readings stay on this Mac. The proposal is rechecked before starting. Cancel here to stop observation; an Activity Monitor launch already requested cannot be recalled.", "\n\n本次不会执行性能优化。真实读数保留在本机，开始前会再次核验建议。可在本应用取消观测；已提交给系统的活动监视器打开请求无法撤回。")
-        alert.addButton(withTitle: DiagnosticText.text("Approve local test", "批准本地测试")); alert.addButton(withTitle: DiagnosticText.text("Cancel", "取消"))
+        let alert = SyntheticStatusWindow.approval(for: proposal)
         guard alert.runModal() == .alertFirstButtonReturn,
               state.phase == .reviewing, state.proposal?.manifestHash == hash else { return }
         if state.runtimeInstanceID != nil {
@@ -454,6 +445,7 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
                     self.state.activeReceipt?.observations.append(values)
                     lastSignature = signature
                 }
+                if self.window?.isVisible == true { self.showRunning(activate: false) }
                 if elapsed >= duration {
                     self.observationTimer?.invalidate(); self.observationTimer = nil
                     self.record("observation_finished; compare timestamps and freshness, not synthetic fixture values")
@@ -469,6 +461,7 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
         state.activeReceipt?.actionResults.append(message)
         do { try storage.save(state) }
         catch { interrupt(reason: "receipt_storage_failed") }
+        if state.phase == .executing, window?.isVisible == true { showRunning(activate: false) }
     }
     private func complete(_ outcome: String) {
         guard state.phase == .executing, let proposal = state.proposal else { return }
@@ -524,21 +517,15 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
             reviewCurrent()
         } catch { show(error) }
     }
-    private func showRunning() {
-        let actions = state.proposal?.actions.map(\.description).joined(separator: "\n\n") ?? ""
-        present(title: DiagnosticText.text("Approved local test running…", "正在进行已批准的本地测试…"), text: actions + "\n\n" + DiagnosticText.text(
-            "Only the approved native actions are running. Measurements use existing collectors and stay local. No optimization is performed. Cancel can stop observation; opening Activity Monitor does not close it again. Sleep or collection changes interrupt the test.",
-            "仅执行你批准的原生操作，观测使用已有采集器，读数保留在本机。本次没有执行性能优化。取消可以停止观测，但不会关闭已经打开的活动监视器。睡眠或采集状态变化会中断测试。"), buttons: [(DiagnosticText.text("Cancel local test", "取消本地测试"), #selector(cancel))], busy: true)
+    private func showRunning(activate: Bool = true) {
+        presentExperience(SyntheticExperience.running(state.proposal, receipt: state.activeReceipt), buttons: [(DiagnosticText.text("Stop observation", "停止观测"), #selector(cancel))], activate: activate)
     }
     @objc private func showReceipt() {
         guard let receipt = state.receipts.last else { return }
         do {
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let details = String(data: try encoder.encode(receipt), encoding: .utf8) ?? ""
-            let before = receipt.before.isEmpty ? DiagnosticText.text("No readings available", "暂无可用读数") : receipt.before.map(DiagnosticText.reading).joined(separator: "\n")
-            let after = receipt.after.isEmpty ? DiagnosticText.text("No readings available", "暂无可用读数") : receipt.after.map(DiagnosticText.reading).joined(separator: "\n")
-            let text = DiagnosticText.text("Real local readings from existing collectors. These are separate from the fixed synthetic fixture. Missing or stale data does not demonstrate improvement. This receipt makes no performance optimization claim.", "以下是已有采集器的真实本地读数，与固定的合成样例不同。缺失或过时的数据不能说明性能改善；此回执不代表已完成性能优化。") + "\n\n" + DiagnosticText.text("Before", "测试前") + "\n" + before + "\n\n" + DiagnosticText.text("After", "测试后") + "\n" + after
-            present(title: DiagnosticText.outcome(receipt.outcome), text: text, buttons: [(DiagnosticText.text("Save local receipt…", "保存本地回执…"), #selector(saveReceipt)), (DiagnosticText.text("Back to status", "返回状态"), #selector(reviewCurrent))], details: details, localEvidence: true)
+            presentExperience(SyntheticExperience.receipt(receipt), buttons: [(DiagnosticText.text("Back to overview", "返回概览"), #selector(reviewCurrent)), (DiagnosticText.text("Save local result…", "保存本地结果…"), #selector(saveReceipt))], details: details)
         } catch { show(error) }
     }
     @objc private func saveReceipt() {
@@ -551,74 +538,14 @@ final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try data.write(to: url, options: .atomic)
     }
-    private func present(title: String, text: String, buttons: [(String, Selector)], details: String = "", busy: Bool = false, localEvidence: Bool = false) {
-        // Keep the same window alive while state changes so clicks never dismiss their own feedback.
-        let w: NSWindow
-        if let existing = window { w = existing }
-        else {
-            w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 600), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-            w.isReleasedWhenClosed = false; w.minSize = NSSize(width: 660, height: 520)
-            w.center(); window = w
-        }
-        w.title = DiagnosticText.text("Stats Diagnostics · dot test", "Stats Diagnostics · dot 测试")
-        let container = NSView()
-        let root = NSStackView(); root.orientation = .vertical; root.alignment = .leading; root.spacing = 18
-        root.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(root)
-        NSLayoutConstraint.activate([root.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24), root.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24), root.topAnchor.constraint(equalTo: container.topAnchor, constant: 24), root.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -24)])
-        func label(_ value: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor = .labelColor) -> NSTextField {
-            let field = NSTextField(wrappingLabelWithString: value)
-            field.font = .systemFont(ofSize: size, weight: weight); field.textColor = color
-            field.isSelectable = true; field.setContentCompressionResistancePriority(.required, for: .vertical)
-            root.addArrangedSubview(field); field.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
-            return field
-        }
-        _ = label(localEvidence ? DiagnosticText.text("LOCAL RECEIPT · REAL CACHED READINGS", "本地回执 · 真实采集读数") : DiagnosticText.text("SYNTHETIC TEST · NOT THIS MAC’S HEALTH", "合成测试 · 不代表这台 Mac 的实际状态"), size: 12, weight: .semibold, color: .secondaryLabelColor)
-        let heading = NSStackView(); heading.orientation = .horizontal; heading.spacing = 10
-        let titleLabel = NSTextField(wrappingLabelWithString: title); titleLabel.font = .systemFont(ofSize: 23, weight: .semibold)
-        heading.addArrangedSubview(titleLabel)
-        if busy {
-            let spinner = NSProgressIndicator(); spinner.style = .spinning; spinner.controlSize = .small
-            spinner.setAccessibilityLabel(DiagnosticText.text("In progress", "正在处理")); spinner.startAnimation(nil)
-            heading.addArrangedSubview(spinner)
-        }
-        root.addArrangedSubview(heading); heading.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
-        if !localEvidence {
-            _ = label(DiagnosticText.text("Fixed fixture: CPU 92% · memory normal · disk 80 GiB", "固定样例：CPU 92% · 内存正常 · 磁盘可用 80 GiB"), size: 13, color: .secondaryLabelColor)
-        }
-        _ = label(text, size: 14)
-        let row = NSStackView(); row.orientation = .horizontal; row.spacing = 10
-        for (index, entry) in buttons.enumerated() {
-            let button = NSButton(title: entry.0, target: self, action: entry.1)
-            button.bezelStyle = .rounded; button.controlSize = .large; button.isEnabled = enabled(entry.1)
-            if index == 0 && button.isEnabled && entry.1 != #selector(authorize) { button.keyEquivalent = "\r" }
-            row.addArrangedSubview(button)
-        }
-        root.addArrangedSubview(row)
-        detailScroll = nil
-        if !details.isEmpty {
-            let disclosure = NSButton(checkboxWithTitle: DiagnosticText.text("Show technical details", "显示技术详情"), target: self, action: #selector(toggleDetails))
-            disclosure.state = detailsExpanded ? .on : .off
-            root.addArrangedSubview(disclosure)
-            let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
-            let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 660, height: 170))
-            view.isEditable = false; view.isSelectable = true; view.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-            view.autoresizingMask = [.width]; view.textContainer?.widthTracksTextView = true; view.string = details
-            scroll.documentView = view; root.addArrangedSubview(scroll)
-            scroll.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
-            scroll.heightAnchor.constraint(equalToConstant: 170).isActive = true
-            scroll.isHidden = !detailsExpanded; detailScroll = scroll
-        }
-        w.contentView = container
-        w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    private func presentExperience(_ model: SyntheticExperience, buttons: [(String, Selector)], details: String = "", activate: Bool = true) {
+        present(title: model.title, text: model.introduction, buttons: buttons, details: details, busy: model.busy, localEvidence: model.localEvidence, sections: model.sections, progress: model.progress, activate: activate)
     }
-    @objc private func toggleDetails(_ sender: NSButton) {
-        detailsExpanded = sender.state == .on
-        detailScroll?.isHidden = !detailsExpanded
-        if detailsExpanded, let window, window.frame.height < 790 {
-            var frame = window.frame; frame.origin.y -= 190; frame.size.height += 190
-            window.setFrame(frame, display: true, animate: true)
-        }
+    private func present(title: String, text: String, buttons: [(String, Selector)], details: String = "", busy: Bool = false, localEvidence: Bool = false,
+                         sections: [SyntheticSection] = [], progress: String = "", activate: Bool = true) {
+        statusWindow.show(title: title, introduction: text, sections: sections, progress: progress,
+                          buttons: buttons.map { SyntheticStatusWindow.Button(title: $0.0, action: $0.1, enabled: enabled($0.1), isApproval: $0.1 == #selector(authorize)) }, target: self,
+                          details: details, busy: busy, localEvidence: localEvidence, activate: activate)
     }
     private func show(_ error: Error) {
         let alert = NSAlert(); alert.messageText = DiagnosticText.text("The test could not continue", "测试暂时无法继续")
