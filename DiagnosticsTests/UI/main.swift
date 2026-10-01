@@ -33,7 +33,14 @@ func snapshot(_ name: String) throws {
     }
     guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("UI render unavailable") }
     view.cacheDisplay(in: view.bounds, to: bitmap)
-    guard let png = bitmap.representation(using: .png, properties: [:]) else { fatalError("PNG render unavailable") }
+    // NSView caching preserves transparency. Composite onto the app background in
+    // AppKit so artifact viewers do not accidentally render black text on black.
+    guard let canvas = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: bitmap.pixelsWide, pixelsHigh: bitmap.pixelsHigh, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: canvas) else { fatalError("Canvas unavailable") }
+    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
+    NSColor.windowBackgroundColor.setFill(); NSBezierPath(rect: view.bounds).fill()
+    bitmap.draw(in: view.bounds)
+    context.flushGraphics(); NSGraphicsContext.restoreGraphicsState()
+    guard let png = canvas.representation(using: .png, properties: [:]) else { fatalError("PNG render unavailable") }
     try png.write(to: output.appendingPathComponent((zh ? "zh-" : "en-") + name + ".png"))
 }
 run("reviewCurrent")
