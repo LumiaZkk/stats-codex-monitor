@@ -90,7 +90,14 @@ final class RealOptimizationController: NSObject {
     private func showPreview() {
         guard let sample else { open(); return }
         let rows = sample.consumers.map { row in
-            let name = row["display_name"] as? String ?? "—"
+            let name: String
+            switch row["category"] as? String {
+            case "system_process": name = text("System process", "系统进程")
+            case "protected_app": name = text("Protected app", "受保护应用")
+            case "app_helper": name = text("App helper", "应用辅助进程")
+            case "unknown_process": name = text("Other process", "其他进程")
+            default: name = row["display_name"] as? String ?? "—"
+            }
             let bp = row["cpu_basis_points"] as? Int ?? 0, rss = row["resident_bytes"] as? UInt64 ?? 0
             return "\(DiagnosticText.safeUntrusted(name)) · CPU \(String(format: "%.1f", Double(bp) / 100))% · \(rss / 1_048_576) MiB"
         }.joined(separator: "\n")
@@ -195,9 +202,7 @@ final class RealOptimizationController: NSObject {
         guard !busy, !storageError, !requestConsumed, let plan, let request, let displayed = displayManifest, plan.decision != "no_action", activeID == nil else { return }
         let immutable = plan.manifest(candidate: candidate, request: request)
         guard displayed == immutable, plan.permitsStart(at: Date()) else { fail(RealOptimizationError.expired); return }
-        let alert = NSAlert(); alert.messageText = plan.recommendsQuit ? text("Approve normal quit of this app?", "批准正常退出这个应用吗？") : text("Approve60seconds of observation?", "批准观测 60 秒吗？")
-        alert.informativeText = (candidate.map { DiagnosticText.safeUntrusted($0.identity.displayName) + "\n" + usageText($0.usage) + "\n" + $0.identity.bundleID + " · " + $0.identity.teamID + "\n\n" } ?? "") + text("This approval applies once to this exact target and plan. Save your work first. The app controls any save prompt. No forced termination or automatic retry will occur. After a quit request is sent, Cancel cannot retract it.", "本次批准只适用于这份建议和这个确切目标，且仅执行一次。请先保存工作。保存提示由目标应用处理，不会强制终止或自动重试。退出请求发出后，取消无法撤回该请求。")
-        alert.addButton(withTitle: text("Approve this action", "批准本次操作")); alert.addButton(withTitle: text("Cancel", "取消"))
+        let alert = makeApprovalAlert(plan)
         let token = generation
         guard alert.runModal() == .alertFirstButtonReturn, token == generation, self.plan == plan, displayManifest == immutable else { return }
         busy = true; status = text("Rechecking the same cloud plan and current app identity/usage…", "正在复核同一份云端建议，以及当前应用身份与占用…"); showProgress()
@@ -214,6 +219,12 @@ final class RealOptimizationController: NSObject {
                 } catch { self.busy = false; self.fail(error) }
             }
         }
+    }
+    private func makeApprovalAlert(_ plan: RealPlan) -> NSAlert {
+        let alert = NSAlert(); alert.messageText = plan.recommendsQuit ? text("Approve normal quit of this app?", "批准正常退出这个应用吗？") : text("Approve60seconds of observation?", "批准观测 60 秒吗？")
+        alert.informativeText = (candidate.map { DiagnosticText.safeUntrusted($0.identity.displayName) + "\n" + usageText($0.usage) + "\n" + $0.identity.bundleID + " · " + $0.identity.teamID + "\n\n" } ?? "") + text("This approval applies once to this exact target and plan. Save your work first. The app controls any save prompt. No forced termination or automatic retry will occur. After a quit request is sent, Cancel cannot retract it.", "本次批准只适用于这份建议和这个确切目标，且仅执行一次。请先保存工作。保存提示由目标应用处理，不会强制终止或自动重试。退出请求发出后，取消无法撤回该请求。")
+        alert.addButton(withTitle: text("Approve this action", "批准本次操作")); alert.addButton(withTitle: text("Cancel", "取消"))
+        return alert
     }
     private func freshMeasurement(_ candidate: RealCandidate, plan: RealPlan, manifest: String, token: UUID) {
         queue.async { [weak self] in
@@ -435,6 +446,9 @@ final class RealOptimizationController: NSObject {
         self.candidate = sample.candidates.first { $0.id == plan.candidateID }; self.busy = false; self.requestConsumed = false
         showPlan(plan)
     }
+    func testShowPreview() { status = ""; showPreview() }
+    func testApprovalAlert() -> NSAlert { makeApprovalAlert(plan!) }
+    func testShowRunning() { status = text("The app’s original process exited. Observing local metrics:30/60seconds.", "应用原进程已退出，正在观测本机指标：30/60 秒。"); showProgress() }
     func testConsumeAndReopen(cancelled: Bool) throws {
         guard !storageError else { throw RoundtripError.invalid("QA initialization storage failure: " + storageFailureDetail) }
         try createReceipt(outcome: "declined", approved: false)
