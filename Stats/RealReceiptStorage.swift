@@ -40,7 +40,9 @@ final class RealReceiptStorage {
     static func pruned(_ receipts: [RealLocalReceipt], at now: Date) -> [RealLocalReceipt] {
         Array(receipts.filter { value in
             guard let date = try? RoundtripJSON.date(value.startedAt) else { return false }
-            return (0...(7 * 86400)).contains(now.timeIntervalSince(date))
+            // ISO8601DateFormatter rounds to milliseconds; a freshly encoded stamp
+            // may be a fraction of a millisecond ahead of the source Date.
+            return (-0.002...(7 * 86400)).contains(now.timeIntervalSince(date))
         }.suffix(20))
     }
     func save(_ receipts: [RealLocalReceipt]) throws {

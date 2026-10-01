@@ -96,6 +96,10 @@ let storeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUI
 let store = RealReceiptStorage(directory: storeURL)
 var durable = RealLocalReceipt(id: UUID().uuidString.lowercased(), requestID: request.id, clientRequestHash: request.hash, planID: plan.id, planHash: plan.hash, manifest: manifest, targetFingerprint: identity.fingerprint, appName: "Fixture", startedAt: RoundtripJSON.timestamp(now), outcome: "quit_dispatch_pending", quitRequested: false, exitConfirmed: false, before: before, beforeUsage: usage)
 durable.dispatchAttempted = true; durable.dispatchOutcomeKnown = false
+let fractionalNow = now.addingTimeInterval(0.0008)
+var fractionalReceipt = durable
+fractionalReceipt = RealLocalReceipt(id: durable.id, requestID: request.id, clientRequestHash: request.hash, planID: plan.id, planHash: plan.hash, manifest: manifest, targetFingerprint: identity.fingerprint, appName: "Fixture", startedAt: RoundtripJSON.timestamp(fractionalNow), outcome: "approved", quitRequested: false, exitConfirmed: false, before: before, beforeUsage: usage)
+check(RealReceiptStorage.pruned([fractionalReceipt], at: fractionalNow).count == 1, "Millisecond serialization never prunes a newly created receipt")
 try store.save([durable])
 let recovered = try store.load(at: now.addingTimeInterval(3))
 check(recovered.count == 1 && recovered[0].outcome == "interrupted_by_restart", "Restart never resumes a saved approval")
