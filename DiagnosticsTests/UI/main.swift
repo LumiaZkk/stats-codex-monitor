@@ -107,8 +107,12 @@ func proposalFixture() throws -> VerifiedSyntheticProposal {
 let proposal = try proposalFixture()
 let preview = SyntheticStatusWindow(), inertTarget = NSObject()
 func showModel(_ model: SyntheticExperience, approval: Bool = false) {
+    let label = approval ? DiagnosticText.text("Review local approval…", "查看并决定是否批准…") : model.busy ? DiagnosticText.text("Stop observation", "停止观测") : DiagnosticText.text("Back to overview", "返回概览")
+    var buttons = [SyntheticStatusWindow.Button(title: label, action: NSSelectorFromString("noop"), enabled: true, isApproval: approval)]
+    if approval { buttons.append(SyntheticStatusWindow.Button(title: DiagnosticText.text("Do not run", "不执行"), action: NSSelectorFromString("noop"), enabled: true)) }
+    if model.localEvidence { buttons.append(SyntheticStatusWindow.Button(title: DiagnosticText.text("Save local result…", "保存本地结果…"), action: NSSelectorFromString("noop"), enabled: true)) }
     preview.show(title: model.title, introduction: model.introduction, sections: model.sections, progress: model.progress,
-                 buttons: [SyntheticStatusWindow.Button(title: approval ? DiagnosticText.text("Review local approval…", "查看并决定是否批准…") : DiagnosticText.text("Back to overview", "返回概览"), action: NSSelectorFromString("noop"), enabled: true, isApproval: approval)], target: inertTarget, busy: model.busy, localEvidence: model.localEvidence)
+                 buttons: buttons, target: inertTarget, busy: model.busy, localEvidence: model.localEvidence)
 }
 showModel(.proposal(proposal), approval: true)
 check(visibleText().contains(proposal.untrustedSummary), "Returned model summary is primary content")
