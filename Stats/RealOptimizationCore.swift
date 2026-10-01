@@ -20,7 +20,7 @@ enum RealOptimizationError: Error, LocalizedError {
 enum RealJSON {
     static func encode(_ value: [String: Any]) throws -> String {
         let bytes = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])
-        guard bytes.count < 12 * 1024, let string = String(data: bytes, encoding: .utf8) else { throw RealOptimizationError.invalid }
+        guard bytes.count < SyntheticSocketTransport.maximumBytes, let string = String(data: bytes, encoding: .utf8) else { throw RealOptimizationError.invalid }
         return string
     }
     static func bool(_ value: [String: Any], _ key: String, _ expected: Bool) throws {
@@ -81,7 +81,7 @@ struct RealCandidate: Codable, Equatable {
     let identity: RealAppIdentity // local only; never included in wire dictionaries
     var usage: RealAppUsage
     func wire(exited: Bool = false, at now: Date? = nil) -> [String: Any] {
-        ["candidate_id": id, "display_name": String(identity.displayName.prefix(64)), "category": "ordinary_gui_app",
+        ["candidate_id": id, "display_name": String(String.UnicodeScalarView(identity.displayName.unicodeScalars.prefix(64))), "category": "ordinary_gui_app",
          "cpu_basis_points": exited ? NSNull() : usage.cpuBasisPoints as Any,
          "resident_bytes": exited ? NSNull() : usage.residentBytes as Any,
          "interval_ms": exited ? NSNull() : usage.intervalMS as Any,
@@ -101,6 +101,9 @@ struct RealDiagnosticRequest: Equatable {
     static func create(sample: RealGlobalSample, snapshot: RealHostSnapshot, recent: [[String: Any]], consentAt: Date, at now: Date) throws -> Self {
         guard sample.candidates.allSatisfy({ candidate in
             guard let observed = try? RoundtripJSON.date(candidate.usage.observedAt) else { return false }
+            return (0...30).contains(now.timeIntervalSince(observed))
+        }), sample.consumers.allSatisfy({ row in
+            guard let stamp = row["observed_at"] as? String, let observed = try? RoundtripJSON.date(stamp) else { return false }
             return (0...30).contains(now.timeIntervalSince(observed))
         }), consentAt <= now, now.timeIntervalSince(consentAt) < 600 else { throw RealOptimizationError.noConsent }
         let id = UUID().uuidString.lowercased(), created = RoundtripJSON.timestamp(now), expires = RoundtripJSON.timestamp(now.addingTimeInterval(600))
@@ -131,7 +134,7 @@ struct RealPlan: Equatable {
     static func parse(_ bundle: [String: Any], pending: RealDiagnosticRequest, at now: Date) throws -> Self {
         try RoundtripJSON.keys(bundle, ["schema_version", "kind", "request_json", "request_hash", "proposal_json", "proposal_hash"])
         guard try RoundtripJSON.number(bundle, "schema_version") == 1, try RoundtripJSON.string(bundle, "kind") == "stats_real_result" else { throw RealOptimizationError.invalid }
-        let requestJSON = try RoundtripJSON.string(bundle, "request_json", maximum: 8192), requestHash = try RoundtripJSON.string(bundle, "request_hash")
+        let requestJSON = try RoundtripJSON.string(bundle, "request_json", maximum: 14000), requestHash = try RoundtripJSON.string(bundle, "request_hash")
         let planJSON = try RoundtripJSON.string(bundle, "proposal_json", maximum: 4096), planHash = try RoundtripJSON.string(bundle, "proposal_hash")
         guard RoundtripJSON.digest(requestJSON) == requestHash, RoundtripJSON.digest(planJSON) == planHash else { throw RealOptimizationError.invalid }
         let request = try RoundtripJSON.object(requestJSON), plan = try RoundtripJSON.object(planJSON)
@@ -162,8 +165,10 @@ struct RealPlan: Equatable {
             try RoundtripJSON.keys(actions[0], ["type"])
             guard try RoundtripJSON.string(actions[0], "type") == "observe_metrics" else { throw RealOptimizationError.invalid }
         } else { guard actions.isEmpty else { throw RealOptimizationError.invalid } }
+        let summary = try RoundtripJSON.string(plan, "summary", maximum: 2000)
+        guard summary.unicodeScalars.count <= 1000 else { throw RealOptimizationError.invalid }
         return Self(id: id, hash: planHash, serverID: serverID, serverHash: requestHash, expiresAt: expiry,
-                    summary: try RoundtripJSON.string(plan, "summary"), decision: decision, candidateID: candidateID)
+                    summary: summary, decision: decision, candidateID: candidateID)
     }
 }
 
@@ -173,11 +178,17 @@ struct RealSocketStatus {
     let serverHash: String
     let plan: RealPlan?
     let receipt: [String: Any]?
-    static func command(_ operation: String, request: RealDiagnosticRequest, endpointID: String, receipt: [String: Any]? = nil) throws -> Data {
+    static func command(_ operation: String, request: RealDiagnosticRequest, endpointID: String, receipt: [String: Any]? = nil, server: (String, String)? = nil) throws -> Data {
         guard ["diagnose_real", "result_real", "cancel_real", "receipt_real"].contains(operation), (operation == "receipt_real") == (receipt != nil) else { throw RealOptimizationError.invalid }
         try RoundtripJSON.uuid(endpointID)
         var command: [String: Any] = ["schema_version": 2, "op": operation, "expected_instance_id": endpointID, "client_request": request.envelope]
-        if let receipt { command["receipt"] = receipt }
+        if let receipt {
+            guard let server else { throw RealOptimizationError.invalid }
+            try RoundtripJSON.uuid(server.0); try RoundtripJSON.hash(server.1)
+            command.removeValue(forKey: "client_request")
+            command["client_request_id"] = request.id; command["client_request_hash"] = request.hash
+            command["request_id"] = server.0; command["request_hash"] = server.1; command["receipt"] = receipt
+        }
         return Data(try RealJSON.encode(command).utf8)
     }
     static func parse(_ bytes: Data, request: RealDiagnosticRequest, expected: (String, String)?, at now: Date) throws -> Self {
@@ -204,6 +215,8 @@ struct RealSocketStatus {
 struct RealLocalReceipt: Codable {
     let id: String
     let requestID: String
+    let clientRequestHash: String
+    var runtimeInstanceID: String?
     let planID: String
     let planHash: String
     let manifest: String
@@ -214,6 +227,8 @@ struct RealLocalReceipt: Codable {
     var approvalAt: String?
     var outcome: String
     var quitRequested: Bool
+    var dispatchAttempted = false
+    var dispatchOutcomeKnown = false
     var exitConfirmed: Bool
     let before: RealHostSnapshot
     let beforeUsage: RealAppUsage?

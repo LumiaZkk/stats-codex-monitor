@@ -191,9 +191,11 @@ extension RealAppProbe {
         let consumers: [[String: Any]] = top.compactMap { pid in
             guard let usage = usages[pid] else { return nil }
             let candidate = targets.first { $0.identity.pid == pid }
+            let recognized = candidate?.identity ?? (try? identity(pid: pid))
+            let sameIdentity = recognized.map { after.starts[pid] == "\($0.startedSeconds):\($0.startedMicroseconds)" } ?? false
             let category: String
             let name: String
-            if let candidate { category = "ordinary_gui_app"; name = String(candidate.identity.displayName.prefix(64)) }
+            if let recognized, sameIdentity { category = "ordinary_gui_app"; name = String(String.UnicodeScalarView(recognized.displayName.unicodeScalars.prefix(64))) }
             else if after.uids[pid] != geteuid() { category = "system_process"; name = "System process" }
             else if let app = apps[pid], app.activationPolicy == .regular {
                 category = "protected_app"; name = "Protected app"

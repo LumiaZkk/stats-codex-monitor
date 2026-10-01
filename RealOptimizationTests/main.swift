@@ -21,7 +21,8 @@ let plan = try RealPlan.parse(result, pending: request, at: now)
 check(plan.hash == vectors["proposal_hash"] as? String, "JS proposal hash matches")
 check(plan.recommendsQuit, "Fixture proposes real quit")
 check(plan.candidateID == request.candidateIDs[0], "Plan binds eligible opaque target")
-check(plan.summary.contains("\n"), "Model summary is preserved as plain text")
+let originalSummary = try RoundtripJSON.object(result["proposal_json"] as! String)["summary"] as? String
+check(plan.summary == originalSummary, "Model summary is preserved as plain text")
 check(plan.permitsStart(at: now), "Fresh plan has full bounded run time")
 let nearExpiry = try RoundtripJSON.date(plan.expiresAt).addingTimeInterval(-79)
 check(!plan.permitsStart(at: nearExpiry), "Near-expiry cannot begin")
@@ -74,6 +75,10 @@ check(measured.cpuBasisPoints == 5000 && measured.residentBytes == 2048, "CPU de
 rejects("counter rollback") { _ = try RealAppCounter.usage(c2, c1, maximumCores: 8) }
 let before = try RealHostSnapshot.parse(body["snapshot"] as! [String: Any], at: try RoundtripJSON.date(request.createdAt))
 check(before.cpuBasisPoints != nil, "Timestamped host cache parses")
+let socketBytes = try Data(contentsOf: root.appendingPathComponent("real-socket-status-v1.json"))
+let socket = try RealSocketStatus.parse(socketBytes, request: request, expected: nil, at: now)
+check(socket.plan == plan, "Actual shared outer status parses")
+rejects("server binding mismatch") { _ = try RealSocketStatus.parse(socketBytes, request: request, expected: (UUID().uuidString.lowercased(), plan.serverHash), at: now) }
 let command = try RealSocketStatus.command("diagnose_real", request: request, endpointID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
 check(command.count < 16384 && !command.contains(10), "One bounded frame")
 rejects("unknown socket operation") { _ = try RealSocketStatus.command("execute", request: request, endpointID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd") }

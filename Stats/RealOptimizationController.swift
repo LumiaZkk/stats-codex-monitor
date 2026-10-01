@@ -29,6 +29,7 @@ final class RealOptimizationController: NSObject {
     private var status = ""
     private var beforeWire: [String: Any]?
     private var displayManifest: String?
+    private var requestConsumed = false
 
     init(directory: URL, capture: @escaping Capture, recent: @escaping () -> [[String: Any]]) {
         self.capture = capture; self.recent = recent; storage = RealReceiptStorage(directory: directory)
@@ -44,6 +45,7 @@ final class RealOptimizationController: NSObject {
     }
     @objc func open() {
         if busy { showProgress(); return }
+        if requestConsumed { showLast(); return }
         if let plan { showPlan(plan); return }
         if sample != nil { showPreview(); return }
         show(text("Diagnose this Mac, then choose an action", "分析这台 Mac，再决定是否执行"),
@@ -91,7 +93,7 @@ final class RealOptimizationController: NSObject {
             let bp = row["cpu_basis_points"] as? Int ?? 0, rss = row["resident_bytes"] as? UInt64 ?? 0
             return "\(DiagnosticText.safeUntrusted(name)) · CPU \(String(format: "%.1f", Double(bp) / 100))% · \(rss / 1_048_576) MiB"
         }.joined(separator: "\n")
-        let targets = sample.candidates.map { "\(DiagnosticText.safeUntrusted($0.identity.displayName)) · \(usageText($0.usage))" }.joined(separator: "\n")
+        let targets = sample.candidates.map { "\(DiagnosticText.safeUntrusted($0.wire()["display_name"] as? String ?? "")) · \(usageText($0.usage))" }.joined(separator: "\n")
         let sections = [SyntheticSection(title: text("Real host readings and sample times", "本机读数与采样时间"), body: hostText(snapshot)),
                         SyntheticSection(title: text("Largest visible consumers", "占用较高的可见进程"), body: rows.isEmpty ? text("No usable process samples.", "暂无可用进程采样。") : rows),
                         SyntheticSection(title: text("Apps the model may recommend quitting", "可被建议正常退出的应用"), body: targets.isEmpty ? text("None. Analysis can still recommend observation or no action.", "暂无。仍可分析并建议继续观测或不操作。") : targets),
@@ -103,7 +105,9 @@ final class RealOptimizationController: NSObject {
     @objc private func send() {
         guard !busy, let sample, let previewAt, Date().timeIntervalSince(previewAt) <= 30 else { fail(RealOptimizationError.changed); return }
         do {
-            request = try RealDiagnosticRequest.create(sample: sample, snapshot: snapshot, recent: trend, consentAt: Date(), at: Date())
+            request = try RealDiagnosticRequest.create(sample: sample, snapshot: snapshot, recent: trend.filter { row in
+                guard let stamp = row["observed_at"] as? String, let date = try? RoundtripJSON.date(stamp) else { return false }; return Date().timeIntervalSince(date) <= 300
+            }, consentAt: Date(), at: Date())
             busy = true; status = text("Verifying the approved local runtime…", "正在核验已批准的本机运行端…"); showProgress()
             let token = generation, cancellation = cancellation
             queue.async { [weak self] in
@@ -116,7 +120,7 @@ final class RealOptimizationController: NSObject {
                         let selected: SyntheticRuntimeEndpoint
                         if endpoints.count == 1 { selected = endpoints[0] }
                         else {
-                            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 510, height: 28)); endpoints.forEach { picker.addItem(withTitle: $0.label) }
+                            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 510, height: 28), pullsDown: false); endpoints.forEach { picker.addItem(withTitle: $0.label) }
                             let alert = NSAlert(); alert.messageText = self.text("Choose the approved personal runtime", "选择已批准的个人运行会话")
                             alert.informativeText = self.text("Match the private run directory name shown in Terminal.", "请与终端中 Private run directory 末尾的名称对应。")
                             alert.accessoryView = picker; alert.addButton(withTitle: self.text("Send", "发送")); alert.addButton(withTitle: self.text("Cancel", "取消"))
@@ -132,7 +136,7 @@ final class RealOptimizationController: NSObject {
     private func exchangeJob(_ operation: String, receipt: [String: Any]? = nil) throws -> () throws -> RealSocketStatus {
         guard let request, let endpoint else { throw RealOptimizationError.invalid }
         let expected = binding, cancellation = cancellation
-        let data = try RealSocketStatus.command(operation, request: request, endpointID: endpoint.descriptor.instanceID, receipt: receipt)
+        let data = try RealSocketStatus.command(operation, request: request, endpointID: endpoint.descriptor.instanceID, receipt: receipt, server: binding)
         return {
             try cancellation.check(); try endpoint.validateCurrent()
             let bytes = try endpoint.transport.exchange(data, cancellation: cancellation, peer: endpoint.peer, beforeSend: endpoint.validateCurrent)
@@ -182,12 +186,12 @@ final class RealOptimizationController: NSObject {
         var buttons: [(String, Selector)] = []
         if plan.decision != "no_action" { buttons.append((text("Review and approve…", "核对并批准…"), #selector(approve))) }
         else { buttons.append((text("Finish and return result", "完成并回传结果"), #selector(noAction))) }
-        buttons.append((text("Do not execute", "不执行"), #selector(decline)))
+        if plan.decision != "no_action" { buttons.append((text("Do not execute", "不执行"), #selector(decline))) }
         show(text("dot’s analysis and proposed next step", "dot 的分析与下一步建议"), text("The returned explanation is model text, not an instruction with local authority. Review its evidence and the exact action below.", "返回的解释是模型建议，本身没有本地执行权限。请核对依据及下方确切操作。"),
              sections: [SyntheticSection(title: text("Model conclusion · unverified", "模型结论 · 需结合证据判断"), body: DiagnosticText.safeUntrusted(plan.summary)), SyntheticSection(title: text("Exact action, impact and limits", "确切操作、影响与局限"), body: action), SyntheticSection(title: text("Verification afterward", "执行后如何核验"), body: text("Record whether the original process actually exited, then compare timestamped local metrics after60seconds. Differences are observations, not a causal guarantee of improvement. The bounded receipt is returned to your dot under the sharing consent above.", "记录原进程是否确实退出，再于 60 秒后比较带采样时间的本地指标。变化只是观测结果，不保证由此次操作带来改善。有限结果会按前面的发送确认回传给你的 dot。"))], buttons: buttons)
     }
     @objc private func approve() {
-        guard !busy, let plan, let request, let displayed = displayManifest, plan.decision != "no_action", activeID == nil else { return }
+        guard !busy, !storageError, !requestConsumed, let plan, let request, let displayed = displayManifest, plan.decision != "no_action", activeID == nil else { return }
         let immutable = plan.manifest(candidate: candidate, request: request)
         guard displayed == immutable, plan.permitsStart(at: Date()) else { fail(RealOptimizationError.expired); return }
         let alert = NSAlert(); alert.messageText = plan.recommendsQuit ? text("Approve normal quit of this app?", "批准正常退出这个应用吗？") : text("Approve60seconds of observation?", "批准观测 60 秒吗？")
@@ -228,7 +232,7 @@ final class RealOptimizationController: NSObject {
         }
     }
     private func beginApproved(plan: RealPlan, candidate: RealCandidate?, fresh: RealAppUsage?, manifest: String) throws {
-        guard self.plan == plan, let request, displayManifest == manifest, manifest == plan.manifest(candidate: candidate, request: request) else { throw RealOptimizationError.invalid }
+        guard !requestConsumed, !storageError, self.plan == plan, let request, displayManifest == manifest, manifest == plan.manifest(candidate: candidate, request: request) else { throw RealOptimizationError.invalid }
         var gate = RealExecutionGate(manifest: manifest)
         try gate.approve(displayed: manifest, plan: plan, candidate: candidate, fresh: fresh, now: Date())
         self.gate = gate
@@ -238,13 +242,13 @@ final class RealOptimizationController: NSObject {
             guard let candidate = self.candidate else { throw RealOptimizationError.invalid }
             try self.gate?.takeQuitPermission()
             // Commit authorization + attempted request before the only side-effect API.
-            try updateReceipt { $0.outcome = "quit_dispatch_pending" }
+            try updateReceipt { $0.dispatchAttempted = true; $0.dispatchOutcomeKnown = false; $0.outcome = "quit_dispatch_pending" }
             let validUntil = try RoundtripJSON.date(candidate.usage.observedAt).addingTimeInterval(5)
             let accepted: Bool
             do { accepted = try probe.requestNormalQuit(candidate.identity, notAfter: validUntil) }
             catch { finish("precondition_failed"); return }
+            try updateReceipt { $0.dispatchOutcomeKnown = true; $0.quitRequested = accepted; $0.outcome = accepted ? "quit_requested" : "quit_dispatch_refused" }
             if !accepted { finish("precondition_failed"); return }
-            try updateReceipt { $0.quitRequested = true; $0.outcome = "quit_requested" }
             status = text("Normal quit requested. If the app asks to save, handle it there. Waiting up to15seconds…", "已请求正常退出。若应用提示保存，请在该应用中处理。最多等待 15 秒…")
             showProgress(); waitForQuit(candidate)
         } else { try self.gate?.observeOnly(); observe() }
@@ -278,20 +282,20 @@ final class RealOptimizationController: NSObject {
         self.timer = timer; RunLoop.main.add(timer, forMode: .common)
     }
     private func createReceipt(outcome: String, approved: Bool) throws {
-        guard let request, let plan else { throw RealOptimizationError.invalid }
-        let now = Date(), host = capture(), id = UUID().uuidString.lowercased()
-        let receipt = RealLocalReceipt(id: id, requestID: request.id, planID: plan.id, planHash: plan.hash,
+        guard !requestConsumed, !storageError, let request, let plan else { throw RealOptimizationError.invalid }
+        let now = Date(), host = approved ? capture() : snapshot, id = UUID().uuidString.lowercased()
+        let receipt = RealLocalReceipt(id: id, requestID: request.id, clientRequestHash: request.hash, runtimeInstanceID: endpoint?.descriptor.instanceID, planID: plan.id, planHash: plan.hash,
             manifest: plan.manifest(candidate: candidate, request: request), targetFingerprint: candidate?.identity.fingerprint ?? "none", appName: candidate?.identity.displayName ?? "",
             startedAt: RoundtripJSON.timestamp(now), approvalAt: approved ? RoundtripJSON.timestamp(now) : nil, outcome: outcome,
             quitRequested: false, exitConfirmed: false, before: host, beforeUsage: candidate?.usage)
-        receipts.append(receipt); receipts = RealReceiptStorage.pruned(receipts, at: now); try storage.save(receipts); activeID = id
-        beforeWire = ["observed_at": RoundtripJSON.timestamp(now), "snapshot": host.json, "candidate": candidate?.wire() as Any? ?? NSNull()]
+        receipts.append(receipt); receipts = RealReceiptStorage.pruned(receipts, at: now); try storage.save(receipts); activeID = id; requestConsumed = true
+        beforeWire = ["observed_at": approved ? RoundtripJSON.timestamp(now) : request.createdAt, "snapshot": host.json, "candidate": candidate?.wire() as Any? ?? NSNull()]
     }
     private func updateReceipt(_ change: (inout RealLocalReceipt) -> Void) throws {
         guard let id = activeID, let index = receipts.firstIndex(where: { $0.id == id }) else { throw RealOptimizationError.invalid }
         change(&receipts[index]); try storage.save(receipts)
     }
-    private func finish(_ outcome: String) {
+    private func finish(_ outcome: String, deliver: Bool = true, present: Bool = true) {
         timer?.invalidate(); timer = nil; gate?.finish()
         guard let id = activeID, let index = receipts.firstIndex(where: { $0.id == id }), let request, let plan else { return }
         let now = Date(), after = capture()
@@ -306,24 +310,60 @@ final class RealOptimizationController: NSObject {
             "quit_requested": receipt.quitRequested, "process_exit_confirmed": receipt.exitConfirmed, "before": beforeWire ?? [:], "after": ["quit_confirmed", "observed"].contains(outcome) || receipt.exitConfirmed ? afterWire : NSNull()]
         do {
             let json = try RealJSON.encode(body); receipts[index].cloudReceiptJSON = json; receipts[index].cloudReceiptHash = RoundtripJSON.digest(json)
-            try storage.save(receipts); activeID = nil; busy = false; showLast(); returnReceipt()
+            try storage.save(receipts); activeID = nil; busy = false; if present { showLast() }; if deliver { returnReceipt() }
         } catch { activeID = nil; busy = false; storageError = true; fail(RealOptimizationError.storage) }
     }
-    @objc private func noAction() { do { try createReceipt(outcome: "no_action", approved: false); finish("no_action") } catch { fail(error) } }
-    @objc private func decline() { do { try createReceipt(outcome: "declined", approved: false); finish("declined") } catch { fail(error) } }
+    @objc private func noAction() { guard !busy, !requestConsumed, plan?.decision == "no_action" else { return }; do { try createReceipt(outcome: "no_action", approved: false); finish("no_action") } catch { fail(error) } }
+    @objc private func decline() { guard !busy, !requestConsumed else { return }; do { try createReceipt(outcome: "declined", approved: false); finish("declined") } catch { fail(error) } }
     @objc private func returnReceipt() {
-        guard !busy, let receipt = receipts.last, let json = receipt.cloudReceiptJSON, let hash = receipt.cloudReceiptHash, request?.id == receipt.requestID, endpoint != nil else { return }
-        let envelope: [String: Any] = ["schema_version": 1, "kind": "stats_real_receipt_envelope", "receipt_json": json, "receipt_hash": hash]
+        guard !busy, let receipt = receipts.last, let json = receipt.cloudReceiptJSON, let hash = receipt.cloudReceiptHash,
+              let instance = receipt.runtimeInstanceID else { return }
         let token = generation
-        let job: () throws -> RealSocketStatus
-        do { job = try exchangeJob("receipt_real", receipt: envelope) } catch { fail(error); return }
+        if endpoint?.descriptor.instanceID != instance {
+            busy = true; status = text("Finding the original runtime for this saved receipt…", "正在查找这份已保存结果对应的原运行会话…"); showLast()
+            let cancellation = cancellation
+            queue.async { [weak self] in
+                let result = Result { try SyntheticRuntimeDiscovery.find(cancellation: cancellation).filter { $0.descriptor.instanceID == instance } }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.generation == token else { return }; self.busy = false
+                    do { let matches = try result.get(); guard matches.count == 1 else { throw RuntimeDiscoveryError.originalRuntimeGone }; self.endpoint = matches[0]; self.returnReceipt() }
+                    catch { self.status = self.text("The original runtime is unavailable. This result remains local; it will not be sent to another session.", "原运行会话不可用。结果仍保存在本机，不会发送给其他会话。"); self.showLast() }
+                }
+            }
+            return
+        }
+        guard let endpoint else { return }
+        let job: () throws -> Void
+        do {
+            let body = try RoundtripJSON.object(json)
+            let serverID = try RoundtripJSON.string(body, "request_id"), serverHash = try RoundtripJSON.string(body, "request_hash")
+            let command: [String: Any] = ["schema_version": 2, "op": "receipt_real", "expected_instance_id": instance,
+                "client_request_id": receipt.requestID, "client_request_hash": receipt.clientRequestHash, "request_id": serverID, "request_hash": serverHash,
+                "receipt": ["schema_version": 1, "kind": "stats_real_receipt_envelope", "receipt_json": json, "receipt_hash": hash]]
+            let bytes = Data(try RealJSON.encode(command).utf8), cancellation = cancellation
+            job = {
+                try endpoint.validateCurrent()
+                let reply = try endpoint.transport.exchange(bytes, cancellation: cancellation, peer: endpoint.peer, beforeSend: endpoint.validateCurrent)
+                let outer = try RoundtripJSON.object(reply); try RoundtripJSON.keys(outer, ["result"])
+                let value = try RealJSON.object(outer, "result")
+                try RoundtripJSON.keys(value, ["schema_version", "kind", "client_request_id", "client_request_hash", "request_id", "request_hash", "status", "bundle", "receipt"])
+                let ack = try RealJSON.object(value, "receipt"); try RoundtripJSON.keys(ack, ["receipt_id", "receipt_hash"])
+                guard try RoundtripJSON.number(value, "schema_version") == 1,
+                      try RoundtripJSON.string(value, "kind") == "stats_real_socket_status",
+                      try RoundtripJSON.string(value, "client_request_id") == receipt.requestID,
+                      try RoundtripJSON.string(value, "client_request_hash") == receipt.clientRequestHash,
+                      try RoundtripJSON.string(value, "request_id") == serverID, try RoundtripJSON.string(value, "request_hash") == serverHash,
+                      try RoundtripJSON.string(ack, "receipt_id") == receipt.id, try RoundtripJSON.string(ack, "receipt_hash") == hash else { throw RealOptimizationError.invalid }
+            }
+        } catch { fail(error); return }
         busy = true; status = text("Local result saved. Returning the bounded receipt to dot…", "本地结果已保存，正在向 dot 回传有限结果…"); showLast()
         queue.async { [weak self] in
             let result = Result { try job() }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == token else { return }; self.busy = false
                 do {
-                    guard let remote = try result.get().receipt, Set(remote.keys) == Set(["receipt_id", "receipt_hash"]), remote["receipt_id"] as? String == receipt.id, remote["receipt_hash"] as? String == hash, let index = self.receipts.firstIndex(where: { $0.id == receipt.id }) else { throw RealOptimizationError.invalid }
+                    try result.get()
+                    guard let index = self.receipts.firstIndex(where: { $0.id == receipt.id }) else { throw RealOptimizationError.invalid }
                     self.receipts[index].cloudReceiptConfirmed = true; try self.storage.save(self.receipts)
                     self.status = self.text("The runtime confirmed the exact receipt hash. dot can now verify this result.", "运行端已确认同一份结果哈希，dot 现在可以核验。")
                 } catch { self.status = self.text("Result is saved locally; delivery to dot is unconfirmed. Retry returning the same result.", "结果已保存在本机；尚未确认送达 dot，可重试回传同一份结果。") }
@@ -342,7 +382,7 @@ final class RealOptimizationController: NSObject {
         case "declined": title = text("You declined the action", "你已拒绝本次操作")
         default: title = text("The attempt stopped", "本次尝试已停止")
         }
-        let effect = value.exitConfirmed ? text("The original process is gone. This confirms the quit, not a general performance improvement.", "原进程已不存在，这确认了退出结果，不代表整体性能已改善。") : value.quitRequested ? text("One normal quit was requested. The app may still be asking to save or may have refused. No force quit or retry followed; a request already sent cannot be recalled.", "曾发送一次正常退出请求。应用可能仍在等待保存，或拒绝退出。没有强制退出或重试；已发出的请求无法撤回。") : text("No quit request was sent.", "没有发送退出请求。")
+        let effect = value.dispatchAttempted && !value.dispatchOutcomeKnown ? text("The app may have received a normal quit request, but the dispatch result was not saved before interruption. Its outcome is unknown; do not repeat this old plan.", "应用可能已收到正常退出请求，但中断前未能保存发送结果。实际结果未知，请不要重试这份旧建议。") : value.exitConfirmed ? text("The original process is gone. This confirms the quit, not a general performance improvement.", "原进程已不存在，这确认了退出结果，不代表整体性能已改善。") : value.quitRequested ? text("One normal quit was requested. The app may still be asking to save or may have refused. No force quit or retry followed; a request already sent cannot be recalled.", "曾发送一次正常退出请求。应用可能仍在等待保存，或拒绝退出。没有强制退出或重试；已发出的请求无法撤回。") : value.dispatchAttempted ? text("A normal-quit API call was attempted but acceptance was not confirmed. No forced exit or retry occurred.", "曾尝试调用正常退出接口，但未确认请求被接受，没有强制退出或重试。") : text("No quit request was sent.", "没有发送退出请求。")
         show(title, effect, sections: [SyntheticSection(title: text("Target and exact outcome", "目标与确切结果"), body: DiagnosticText.safeUntrusted(value.appName) + "\n" + (value.beforeUsage.map(usageText) ?? text("Observation only", "仅观测"))),
             SyntheticSection(title: text("Before · actual sample times", "操作前 · 实际采样时间"), body: hostText(value.before)),
             SyntheticSection(title: text("After · actual sample times", "操作后 · 实际采样时间"), body: hostText(value.after ?? .empty)),
@@ -373,15 +413,14 @@ final class RealOptimizationController: NSObject {
     }
     private func resetPending() {
         generation = UUID(); cancellation.cancel(); cancellation = SyntheticSocketCancellation(); timer?.invalidate(); timer = nil
-        request = nil; endpoint = nil; binding = nil; plan = nil; candidate = nil; gate = nil; displayManifest = nil; beforeWire = nil; sample = nil; previewAt = nil
+        request = nil; endpoint = nil; binding = nil; plan = nil; candidate = nil; gate = nil; displayManifest = nil; beforeWire = nil; sample = nil; previewAt = nil; requestConsumed = false
     }
     func interrupt(reason: String) {
-        timer?.invalidate(); timer = nil; cancellation.cancel(); generation = UUID(); busy = false; gate?.cancel()
-        if let id = activeID, let index = receipts.firstIndex(where: { $0.id == id }) {
-            receipts[index].completedAt = RoundtripJSON.timestamp(Date()); receipts[index].outcome = "interrupted_" + reason; receipts[index].after = capture()
-            do { try storage.save(receipts) } catch { storageError = true }; activeID = nil
-        }
-        resetPending()
+        timer?.invalidate(); timer = nil; cancellation.cancel(); cancellation = SyntheticSocketCancellation(); generation = UUID(); busy = false; gate?.cancel()
+        if activeID != nil {
+            // Persist a terminal report, preserving any effect already accepted. No network during sleep/termination.
+            finish("cancelled", deliver: false, present: false)
+        } else if !requestConsumed { resetPending() }
         if reason != "app_termination", ui.window?.isVisible == true { showLast() }
     }
     func maintain(at now: Date) {
@@ -389,4 +428,19 @@ final class RealOptimizationController: NSObject {
         if pruned.count != receipts.count { receipts = pruned; do { try storage.save(receipts) } catch { storageError = true } }
     }
     func stop() { interrupt(reason: "app_termination") }
+    #if DIAGNOSTICS_TESTS
+    func testSeed(request: RealDiagnosticRequest, plan: RealPlan, sample: RealGlobalSample, host: RealHostSnapshot) {
+        self.request = request; self.plan = plan; self.sample = sample; self.snapshot = host
+        self.candidate = sample.candidates.first { $0.id == plan.candidateID }; self.busy = false; self.requestConsumed = false
+        showPlan(plan)
+    }
+    func testConsumeAndReopen(cancelled: Bool) throws {
+        try createReceipt(outcome: "declined", approved: false)
+        finish(cancelled ? "cancelled" : "declined")
+        let count = receipts.count
+        open(); approve()
+        guard requestConsumed, receipts.count == count, activeID == nil else { throw RealOptimizationError.invalid }
+    }
+    func testShowReceipt(_ receipt: RealLocalReceipt) { receipts = [receipt]; requestConsumed = true; busy = false; showLast() }
+    #endif
 }
