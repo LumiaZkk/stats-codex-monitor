@@ -404,3 +404,25 @@ let discoveryGolden = try SyntheticRuntimeDescriptor.parse(Data(contentsOf: URL(
 try discoveryGolden.verifyHello(Data(contentsOf: URL(fileURLWithPath: "DiagnosticsTests/Fixtures/runtime-hello-v2.json")), nonce: nonce)
 check(discoveryGolden.instanceID == instanceID && discoveryGolden.pid == 42424, "Runtime-produced descriptor and hello golden bytes interoperate")
 print("PASS: \(passed) total production assertions including shared discovery vectors")
+
+// Display language selection and repeated-action policy are production logic, not UI mocks.
+check(DiagnosticText.usesSimplifiedChinese(["zh-Hans-CN", "en"]), "Simplified Chinese follows language preference")
+check(DiagnosticText.usesSimplifiedChinese(["zh-CN"]), "Region-only Chinese selects Simplified Chinese")
+check(!DiagnosticText.usesSimplifiedChinese(["en-US", "zh-Hans"]), "Explicit English app preference takes priority")
+check(!DiagnosticText.usesSimplifiedChinese(["de-DE"]), "Unsupported diagnostic language falls back to English")
+let readyControls = SyntheticControlState(phase: .empty, discovering: false, exchanging: false, polling: false, checkingApproval: false, hasReceipt: false)
+check(readyControls.canSend && readyControls.canCheck && !readyControls.canCancel && !readyControls.canApprove, "Idle actions are clear and bounded")
+for flags in [(true, false, false, false), (false, true, false, false), (false, false, true, false), (false, false, false, true)] {
+    let c = SyntheticControlState(phase: .waiting, discovering: flags.0, exchanging: flags.1, polling: flags.2, checkingApproval: flags.3, hasReceipt: false)
+    check(!c.canSend && !c.canRetry && !c.canCheck && !c.canApprove && c.canCancel, "In-flight operations disable repeats and preserve cancel")
+}
+let reviewControls = SyntheticControlState(phase: .reviewing, discovering: false, exchanging: false, polling: false, checkingApproval: false, hasReceipt: false)
+check(reviewControls.canApprove && reviewControls.canCancel && !reviewControls.canSend, "Received proposal requires separate approval")
+let activeControls = SyntheticControlState(phase: .executing, discovering: false, exchanging: false, polling: false, checkingApproval: false, hasReceipt: false)
+check(activeControls.busy && activeControls.canCancel && !activeControls.canApprove && !activeControls.canSend, "Running local test cannot be double-approved")
+let stoppedControls = SyntheticControlState(phase: .waiting, discovering: false, exchanging: false, polling: false, checkingApproval: false, hasReceipt: false)
+check(stoppedControls.canRetry && stoppedControls.canCancel, "Failed retrieval offers same-request retry")
+check(DiagnosticText.reading(LocalMetricReading(metric: .memory, value: 1, observedAt: nil, freshness: .fresh)).contains(DiagnosticText.text("normal", "正常")), "Normal pressure value1 is rendered correctly")
+check(DiagnosticText.reading(LocalMetricReading(metric: .memory, value: 2, observedAt: nil, freshness: .fresh)).contains(DiagnosticText.text("warning", "警告")), "Warning pressure value2 is rendered correctly")
+check(DiagnosticText.reading(LocalMetricReading(metric: .memory, value: 4, observedAt: nil, freshness: .fresh)).contains(DiagnosticText.text("critical", "严重")), "Critical pressure value4 is rendered correctly")
+print("PASS: \(passed) total production assertions including localized UI control policy")

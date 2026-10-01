@@ -47,3 +47,5 @@
 - 独立应用标识与数据目录，不覆盖上游 Stats
 
 基于 Stats v3.0.19（提交 `e42ffdf3fe9cf789649a741ab2a0fb15f377b7f3`），保留 Serhiy Mytrovtsiy 及贡献者的版权与 [MIT 许可](LICENSE)。这是独立实验性 fork，并非 Stats 或 OpenAI 官方产品。
+
+0.5 预览版新增诊断界面的简体中文支持、清晰的发送／等待／错误状态、连接帮助与本地回执摘要。详见[界面行为与验证](docs/CHINESE_STATUS_UI.md)。

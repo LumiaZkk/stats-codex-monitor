@@ -6,13 +6,13 @@ enum RuntimeDiscoveryError: Error, LocalizedError {
     case unsafeRegistry, invalidDescriptor, tooManyEntries, changed, noRuntime, originalRuntimeGone, incomplete
     var errorDescription: String? {
         switch self {
-        case .incomplete: return "Some runtime identities could not be verified. No runtime was selected. Retry, or stop unused foreground runtimes, before sending."
-        case .unsafeRegistry: return "The local runtime registry could not be verified safely. Start the updated foreground runtime; no request was sent."
-        case .invalidDescriptor: return "The local runtime descriptor is invalid, expired or incompatible."
-        case .tooManyEntries: return "Too many runtime entries were found. Stop unused foreground runtimes before retrying."
-        case .changed: return "The runtime changed or stopped. No automatic switch to another runtime is allowed for this request."
-        case .noRuntime: return "No compatible live runtime was found. Start the updated foreground Tunnel runtime and enter its temporary key directly in Terminal, then click Send again. This app never reads the key or launches a service."
-        case .originalRuntimeGone: return "This pending request belongs to a runtime that is no longer available. Cancel it before starting a new diagnosis; it will not be resent to another runtime."
+        case .incomplete: return DiagnosticText.text("Some runtime identities could not be verified. No runtime was selected. Retry, or stop unused foreground runtimes, before sending.", "部分运行端未能完成身份校验，因此未选择任何运行端。请重试，或先停止不需要的前台运行会话。")
+        case .unsafeRegistry: return DiagnosticText.text("The local runtime registry could not be verified safely. Start the updated foreground runtime; no request was sent.", "本机连接信息未通过安全校验。请启动更新后的前台运行端；此次尚未发送请求。")
+        case .invalidDescriptor: return DiagnosticText.text("The local runtime descriptor is invalid, expired or incompatible.", "本机运行端的信息无效、已过期，或版本不兼容。")
+        case .tooManyEntries: return DiagnosticText.text("Too many runtime entries were found. Stop unused foreground runtimes before retrying.", "发现的运行会话过多。请先停止不需要的前台运行会话，再重试。")
+        case .changed: return DiagnosticText.text("The runtime changed or stopped. No automatic switch to another runtime is allowed for this request.", "运行端已变化或停止。本次请求不会自动切换到其他运行端，请取消后重新开始。")
+        case .noRuntime: return DiagnosticText.text("No compatible live runtime was found. Start the updated foreground Tunnel runtime and enter its temporary key directly in Terminal, then click Send again. This app never reads the key or launches a service.", "未发现可用的本机运行端。请在终端启动更新后的前台运行端，并按提示自行输入临时密钥，再回来重试。可点击“连接帮助”查看步骤。")
+        case .originalRuntimeGone: return DiagnosticText.text("This pending request belongs to a runtime that is no longer available. Cancel it before starting a new diagnosis; it will not be resent to another runtime.", "本次请求对应的运行端已不可用。请先取消本次请求，再开始新的测试；不会将旧请求转发给其他运行端。")
         }
     }
 }

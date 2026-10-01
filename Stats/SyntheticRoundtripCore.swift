@@ -194,8 +194,8 @@ struct LocalTestAction: Codable, Equatable {
     let durationSeconds: Int
     var description: String {
         switch kind {
-        case .openActivityMonitor: return "Open Apple's Activity Monitor on this Mac. No process is stopped or changed."
-        case .observeMetrics: return "Observe existing local \(metrics.map { $0.rawValue }.joined(separator: ", ")) readings for \(durationSeconds) seconds. No additional collector starts."
+        case .openActivityMonitor: return DiagnosticText.text("Open Apple’s Activity Monitor on this Mac. No process is stopped or changed.", "在这台 Mac 上打开 Apple 活动监视器，不终止或修改任何进程。")
+        case .observeMetrics: return DiagnosticText.text("Observe existing local \(metrics.map(DiagnosticText.metric).joined(separator: ", ")) readings for \(durationSeconds) seconds. No additional collector starts.", "观测已有的本地读数（\(metrics.map(DiagnosticText.metric).joined(separator: "、"))），持续 \(durationSeconds) 秒，不启动额外采集器。")
         }
     }
     static func parse(_ object: [String: Any]) throws -> Self {

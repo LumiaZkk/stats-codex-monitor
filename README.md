@@ -67,3 +67,5 @@ Future adapters should preserve preview/consent, bounded data, no background LLM
 ## Upstream and license
 
 Based on Stats **v3.0.19**, commit `e42ffdf3fe9cf789649a741ab2a0fb15f377b7f3`, by Serhiy Mytrovtsiy and contributors. Upstream copyright notices and [MIT LICENSE](LICENSE) are preserved; [the original README](UPSTREAM_README.md) is retained. This is an independent experimental fork, not an official Stats or OpenAI product.
+
+The 0.5 preview adds Simplified Chinese diagnostics UI and visible request progress, connection help, and local receipt summaries. See [UI behavior and validation](docs/CHINESE_STATUS_UI.md).
