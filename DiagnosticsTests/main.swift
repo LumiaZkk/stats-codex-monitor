@@ -452,3 +452,14 @@ check(DiagnosticText.safeUntrusted("<script>alert(1)</script>") == "<script>aler
 check(!DiagnosticText.safeUntrusted("abc\u{202E}def").unicodeScalars.contains { $0.value == 0x202E }, "Untrusted bidi override cannot spoof nearby actions")
 check(SyntheticExperience.action(LocalTestAction(kind: .observeMetrics, metrics: [.disk], durationSeconds: 60)).body.contains("5 minutes"), "Short disk observation limitation is explained")
 print("PASS: \(passed) total production assertions including meaningful local experience")
+var progressReceipt = experienceReceipt
+progressReceipt.actionResults = []
+let pendingProgress = SyntheticExperience.running(goldenResult, receipt: progressReceipt, at: experienceStart)
+check(pendingProgress.sections.allSatisfy { $0.body.contains("Not started yet") }, "Unstarted planned actions never look active")
+progressReceipt.actionResults = ["activity_monitor_open_requested; an OS launch request cannot be retracted by Cancel"]
+let launchingProgress = SyntheticExperience.running(goldenResult, receipt: progressReceipt, at: experienceStart)
+check(launchingProgress.sections[0].body.contains("open request was sent") && launchingProgress.sections[1].body.contains("Not started yet"), "Waiting for app launch does not claim observation began")
+progressReceipt.actionResults = ["observation_started: 60s; existing collectors only"]
+let observingProgress = SyntheticExperience.running(goldenResult, receipt: progressReceipt, at: experienceStart)
+check(observingProgress.sections[0].body.contains("Not started yet") && observingProgress.sections[1].body.contains("being checked"), "Observation does not claim a future app launch was requested")
+print("PASS: \(passed) total production assertions including per-action progress")

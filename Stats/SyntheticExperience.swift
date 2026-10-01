@@ -42,10 +42,16 @@ struct SyntheticExperience {
         let sections = (proposal?.actions ?? []).map { action -> SyntheticSection in
             switch action.kind {
             case .openActivityMonitor:
-                return SyntheticSection(title: DiagnosticText.text("Activity Monitor", "活动监视器"), body: results.contains("activity_monitor_opened; no optimization performed") ? DiagnosticText.text("macOS confirmed the app opened. No process was changed.", "macOS 已确认打开应用，没有修改任何进程。") : DiagnosticText.text("Waiting for macOS to confirm the open request.", "正在等待 macOS 确认打开结果。"))
+                let body: String
+                if results.contains("activity_monitor_opened; no optimization performed") { body = DiagnosticText.text("macOS confirmed the app opened. No process was changed.", "macOS 已确认打开应用，没有修改任何进程。") }
+                else if results.contains("activity_monitor_open_requested; an OS launch request cannot be retracted by Cancel") { body = DiagnosticText.text("The open request was sent; waiting for macOS confirmation.", "已发送打开请求，正在等待 macOS 确认。") }
+                else { body = DiagnosticText.text("Not started yet. Actions run in the order you approved.", "尚未开始，操作会按你批准的顺序执行。") }
+                return SyntheticSection(title: DiagnosticText.text("Activity Monitor", "活动监视器"), body: body)
             case .observeMetrics:
                 let finished = results.contains("observation_finished; compare timestamps and freshness, not synthetic fixture values")
-                return SyntheticSection(title: DiagnosticText.text("\(action.durationSeconds)-second observation", "\(action.durationSeconds) 秒只读观测"), body: finished ? DiagnosticText.text("Observation finished. Preparing the local result.", "观测已结束，正在整理本地结果。") : DiagnosticText.text("Local test elapsed: \(elapsed) seconds. Existing cached readings are being checked; fresh values may arrive less often. You can cancel this observation.", "本地测试已进行 \(elapsed) 秒。正在查看已有缓存读数，新的采样不一定每秒到达；你可以取消观测。"))
+                let started = results.contains("observation_started: \(action.durationSeconds)s; existing collectors only")
+                let body = finished ? DiagnosticText.text("Observation finished. Preparing the local result.", "观测已结束，正在整理本地结果。") : started ? DiagnosticText.text("Local test elapsed: \(elapsed) seconds. Existing cached readings are being checked; fresh values may arrive less often. You can cancel this observation.", "本地测试已进行 \(elapsed) 秒。正在查看已有缓存读数，新的采样不一定每秒到达；你可以取消观测。") : DiagnosticText.text("Not started yet. Observation begins after earlier approved actions finish.", "尚未开始，将在前面的已批准操作结束后进行观测。")
+                return SyntheticSection(title: DiagnosticText.text("\(action.durationSeconds)-second observation", "\(action.durationSeconds) 秒只读观测"), body: body)
             }
         }
         return Self(title: DiagnosticText.text("Running only the local tests you approved", "正在进行你批准的本地测试"), introduction: DiagnosticText.text("No performance optimization is being performed. Real readings stay on this Mac. Opening Activity Monitor cannot be undone by cancelling observation.", "本次没有执行性能优化，真实读数留在本机。取消观测不会撤回已经打开的活动监视器。"), sections: sections, localEvidence: false, busy: true, progress: DiagnosticText.text("3 Approval received  ✓    4 Local test running    5 Result next", "3 已获你批准 ✓    4 正在本地测试    5 稍后显示结果"))
