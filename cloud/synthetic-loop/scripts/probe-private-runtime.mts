@@ -15,6 +15,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PANEL_URI,PANEL_HTML } from '../ui/panel-resource.mts';
 const binary=process.env.TUNNEL_CLIENT_BIN;if(!binary)throw new Error('Verified official binary required');
 process.umask(0o077);const dir=await realpath(await mkdtemp(join(tmpdir(),'stats-private-probe-')));
 const now=Date.now(),lease={scope:{mode:'exclusive_personal_global_diagnostics_v1',tunnel_id:'tunnel_'+'a'.repeat(32),organization_id:'org-test',workspace_id:'11111111-1111-4111-8111-111111111111'},verified_at:now,valid_until:now+90_000,run_until:now+3_600_000};
@@ -35,6 +36,12 @@ try{
   }
   async function local<T=Result>(p:unknown):Promise<T>{return new Promise((res,rej)=>{let data='';const s=connect(join(dir,'native.sock'));s.setEncoding('utf8');s.setTimeout(5000,()=>s.destroy(new Error('timeout')));s.once('connect',()=>s.write(JSON.stringify(p)+'\n'));s.on('data',c=>{data+=c;if(Buffer.byteLength(data)>16_384)s.destroy(new Error('too_large'));});s.once('error',rej);s.once('end',()=>{try{const v=JSON.parse(data);if(v.error)throw new Error(v.error);res(v.result);}catch(e){rej(e);}});});}
   assert.equal((await call('server/discover')).error,undefined);assert((await call('events/list')).result?.events?.length);
+  // Exercise the complete (large, single-line) HTML resource through the actual
+  // official client, dev proxy and production stdio framing, not only direct rpc.
+  const resource=await call('resources/read',{uri:PANEL_URI}) as unknown as {error?:unknown;result:{resultType:string;ttlMs:number;cacheScope:string;contents:Array<{uri:string;mimeType:string;text:string}>}};
+  assert.equal(resource.error,undefined);assert.equal(resource.result.resultType,'complete');assert.equal(resource.result.ttlMs,0);assert.equal(resource.result.cacheScope,'private');
+  assert.equal(resource.result.contents.length,1);assert.equal(resource.result.contents[0].uri,PANEL_URI);assert.equal(resource.result.contents[0].mimeType,'text/html;profile=mcp-app');
+  assert.equal(createHash('sha256').update(resource.result.contents[0].text).digest('hex'),createHash('sha256').update(PANEL_HTML).digest('hex'));
   const subscription=await call('events/subscribe',{name:'diagnostic.requested',arguments:{stream_id:'synthetic-smoke-v1'},delivery:{mode:'webhook',url:'http://127.0.0.1/callback',secret:'whsec_'+Buffer.alloc(32,6).toString('base64')}});assert(subscription.error);
   const input={op:'diagnose',idempotency_key:randomUUID()};const created=await local(input),again=await local(input);assert.equal(created.request_hash,again.request_hash);
   const get=await call('tools/call',{name:'get_diagnostic_request',arguments:{request_id:created.request.request_id}});assert.equal(get.result?.structuredContent.request_hash,created.request_hash);
@@ -85,7 +92,7 @@ try{
   assert.equal((await local<RealStatus>(realCommand('cancel_real'))).status,'cancelled');
   await writeFile(join(dir,'access.json'),JSON.stringify({...lease,valid_until:Date.now()-1}),{mode:0o600});
   let rejected=false;try{rejected=Boolean((await call('tools/list')).error);}catch{rejected=true;}assert(rejected,'Expired access must reject calls or close the transport');
-  process.stdout.write(JSON.stringify({private_local_socket_roundtrip:'passed',native_envelope_socket_roundtrip:'passed',rendezvous_bound_protocol_v2:'passed',real_schema_fixture_roundtrip:'passed',receipt_return:'passed',official_mcp_transport:'passed',invalid_callback_rejected:true,expired_access_rejected:true,hosted_tunnel:'not_tested',current_dot_wake:'not_tested',native_execution:'not_tested',real_telemetry_used:false})+'\n');
+  process.stdout.write(JSON.stringify({private_local_socket_roundtrip:'passed',native_envelope_socket_roundtrip:'passed',rendezvous_bound_protocol_v2:'passed',real_schema_fixture_roundtrip:'passed',receipt_return:'passed',official_mcp_transport:'passed',panel_resource_transport:'passed',invalid_callback_rejected:true,expired_access_rejected:true,hosted_tunnel:'not_tested',current_dot_wake:'not_tested',native_execution:'not_tested',real_telemetry_used:false})+'\n');
 }finally{
   process.removeListener('SIGINT',cancel);process.removeListener('SIGTERM',cancel);
   const stop=(s:NodeJS.Signals)=>{try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,s);else child.kill(s);}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e;}};

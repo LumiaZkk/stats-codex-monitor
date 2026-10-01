@@ -9,7 +9,8 @@ import { Bridge, Fault, createSchema, digest, object, requestArgsSchema, validat
 import { Events } from '../bridge/events.mts';
 import type { SafePost } from '../bridge/events.mts';
 import { pinnedHttpsPost } from '../bridge/node-https.mts';
-import { rpc } from '../bridge/mcp.mts';
+import { rpc,TOOLS } from '../bridge/mcp.mts';
+import { panelExtension,isSyntheticSubscription } from './panel.mts';
 import { parseStrictJson } from '../bridge/json.mts';
 import { leasePrincipal } from './identity.mts';
 import type { Lease } from './identity.mts';
@@ -37,7 +38,9 @@ export class SyntheticRuntime {
       const owner = this.access();
       for (const id of this.store.pending(owner)) {
         const event = await this.bridge.event(owner,id);
+        const destination=this.store.panelDestination(owner,id);
         for (const sub of this.store.active(owner)) {
+          if(destination!==undefined&&sub.id!==destination)continue;
           if (!this.store.begin(event.eventId,sub.id)) continue;
           try { await this.events.deliver(owner,sub.id,event,async () => this.access() === owner && (await this.bridge.read(owner,id)).status === 'requested'); this.store.acknowledge(event.eventId,sub.id); }
           catch (e) { if(e instanceof Fault && ['callback_rejected','callback_gone','subscription_not_found','subscription_inactive','request_terminal','event_filter_mismatch'].includes(e.reason))this.store.reject(event.eventId,sub.id); /* No callback URL, payload or secret logged. */ }
@@ -54,12 +57,16 @@ export class SyntheticRuntime {
   async mcp(value: unknown) {
     const owner = this.access();
     const input = value as { method?: string; params?: { name?: string; arguments?: unknown } };
-    const result = await rpc(this.bridge,owner,value,this.events,this.realEnabled?realExtension(this.real):undefined);
+    const base=this.realEnabled?realExtension(this.real):{tools:TOOLS};
+    const extension=panelExtension({bridge:this.bridge,identity:()=>{if(!this.identity)throw new Fault('runtime_identity_unavailable');return this.boundIdentity(this.identity.instance_id);},boundIdentity:expected=>this.boundIdentity(expected),
+      subscriptionReady:()=>this.store.active(this.access()).filter(isSyntheticSubscription).length===1,
+      reserveDestination:(requestOwner,key)=>{const activeOwner=this.access();if(activeOwner!==requestOwner)throw new Fault('runtime_scope_changed');const subs=this.store.active(activeOwner).filter(isSyntheticSubscription);if(subs.length!==1)throw new Fault('synthetic_subscription_unavailable',409);this.store.reservePanelDestination(activeOwner,key,subs[0].id,this.bridge.clock()+30*60_000);return()=>this.store.releaseUncreatedPanelDestination(activeOwner,key);}},base);
+    const result = await rpc(this.bridge,owner,value,this.events,extension);
     if ('result' in result && result.result && typeof result.result === 'object') {
       if (input.method === 'events/list'&&!this.realEnabled) (result.result as { events: { description: string }[] }).events[0].description = 'A fixed synthetic diagnostic fixture was created on the private local test runtime. No real metrics or native commands.';
       if (input.method === 'tools/call' && input.params?.name === 'get_bridge_status') {
         const data = { synthetic_only: !this.realEnabled, real_data_scope:this.realEnabled?'global_diagnostics_v1':'disabled',identity_boundary: 'exclusive_personal_tunnel', callback_resolver:this.resolver, callback_delivery: this.store.active(owner).length ? 'verified_subscription' : 'awaiting_subscription',active_subscriptions:this.store.active(owner).map(s=>({event:s.name,stream_id:s.arguments.stream_id})), last_subscription_attempt: this.events.lastSubscription, same_dot_roundtrip: 'not_verified', native_execution: this.realEnabled?'explicit_local_approval_required':'not_supported', transfer_mode: 'private_local_socket', observed_methods: await this.store.requests.methods(owner) };
-        result.result = { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: false };
+        result.result = { ...result.result,content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: false };
       }
     }
     if (input.method === 'tools/call') setImmediate(()=>void this.pump());

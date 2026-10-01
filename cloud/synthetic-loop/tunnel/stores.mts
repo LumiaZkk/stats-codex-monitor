@@ -23,6 +23,7 @@ export class RuntimeStore {
     this.db.exec(readFileSync(new URL('../drizzle/0000_harsh_lord_hawal.sql', import.meta.url), 'utf8').replaceAll('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS ').replaceAll('CREATE UNIQUE INDEX ', 'CREATE UNIQUE INDEX IF NOT EXISTS '));
     this.db.exec('CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS deliveries(event_id TEXT NOT NULL, subscription_id TEXT NOT NULL, rounds INTEGER NOT NULL DEFAULT 0, received INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(event_id,subscription_id));');
     this.db.exec('CREATE TABLE IF NOT EXISTS native_cancellations(owner TEXT NOT NULL, client_id TEXT NOT NULL, binding_json TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(owner,client_id));');
+    this.db.exec('CREATE TABLE IF NOT EXISTS panel_destinations(owner TEXT NOT NULL, idempotency_key TEXT NOT NULL, subscription_id TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(owner,idempotency_key));');
     initializeRealTables(this.db);
     const db = this.db;
     const d1 = { prepare(sql: string) { return { bind(...args: unknown[]) { const s = db.prepare(sql); return { run: async () => s.run(...args as []), first: async () => s.get(...args as []) ?? null, all: async () => ({ results: s.all(...args as []) }) }; } }; } } as unknown as D1Database;
@@ -37,10 +38,26 @@ export class RuntimeStore {
     this.db.prepare('DELETE FROM subscriptions WHERE expires_at <= ?').run(now);
     this.db.prepare('DELETE FROM diagnostic_requests WHERE expires_at <= ?').run(new Date(now - 86_400_000).toISOString());
     this.db.prepare('DELETE FROM native_cancellations WHERE expires_at <= ?').run(new Date(now - 86_400_000).toISOString());
+    this.db.prepare('DELETE FROM panel_destinations WHERE expires_at <= ?').run(now-86_400_000);
     this.db.exec('DELETE FROM deliveries WHERE event_id NOT IN (SELECT event_id FROM diagnostic_requests UNION ALL SELECT event_id FROM real_diagnostic_requests UNION ALL SELECT receipt_event_id FROM real_diagnostic_requests WHERE receipt_event_id IS NOT NULL) OR subscription_id NOT IN (SELECT id FROM subscriptions)');
   }
   checkCapacity(owner: string, key: string) { this.prune(); if(this.db.prepare('SELECT request_id FROM diagnostic_requests WHERE owner=? AND idempotency_key=?').get(owner,key))return; if (Number(this.db.prepare('SELECT count(*) AS n FROM diagnostic_requests').get()!.n) >= 100) throw new Fault('request_limit'); }
   nativeCancellation(owner:string,clientId:string) {return this.db.prepare('SELECT binding_json FROM native_cancellations WHERE owner=? AND client_id=?').get(owner,clientId) as {binding_json:string}|undefined;}
+  reservePanelDestination(owner:string,key:string,subscriptionId:string,expiresAt:number){
+    const previous=this.db.prepare('SELECT subscription_id FROM panel_destinations WHERE owner=? AND idempotency_key=?').get(owner,key);
+    if(previous){if(previous.subscription_id!==subscriptionId)throw new Fault('panel_subscription_changed',409);return;}
+    if(this.db.prepare('SELECT request_id FROM diagnostic_requests WHERE owner=? AND idempotency_key=?').get(owner,key))throw new Fault('panel_intent_conflict',409);
+    this.prune();
+    if(Number(this.db.prepare('SELECT count(*) AS n FROM panel_destinations').get()!.n)>=100)throw new Fault('panel_request_limit');
+    this.db.prepare('INSERT INTO panel_destinations(owner,idempotency_key,subscription_id,expires_at) VALUES(?,?,?,?)').run(owner,key,subscriptionId,expiresAt);
+  }
+  releaseUncreatedPanelDestination(owner:string,key:string){
+    this.db.prepare('DELETE FROM panel_destinations WHERE owner=? AND idempotency_key=? AND NOT EXISTS (SELECT 1 FROM diagnostic_requests WHERE owner=? AND idempotency_key=?)').run(owner,key,owner,key);
+  }
+  panelDestination(owner:string,requestId:string):string|undefined {
+    const row=this.db.prepare('SELECT p.subscription_id FROM panel_destinations p JOIN diagnostic_requests d ON d.owner=p.owner AND d.idempotency_key=p.idempotency_key WHERE d.owner=? AND d.request_id=?').get(owner,requestId);
+    return row?.subscription_id as string|undefined;
+  }
   nativeRequestId(owner:string,client:NativeTransferRequest):string|null {
     const row=this.db.prepare('SELECT request_id,request_json FROM diagnostic_requests WHERE owner=? AND idempotency_key=?').get(owner,client.client_request_id);
     if(!row)return null;

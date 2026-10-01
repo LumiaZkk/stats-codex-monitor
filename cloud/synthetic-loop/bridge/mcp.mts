@@ -14,7 +14,16 @@ export const TOOLS = [
 ];
 export const EVENT = { name: EVENT_NAME, description: 'A fixed synthetic diagnostic request was created in the synthetic test stream. Hosted callback delivery is gated until a verified transport is available.', delivery: ['webhook'], inputSchema: filterSchema, payloadSchema: eventSchema };
 export interface EventProtocol { subscribe(owner: string, params: unknown): Promise<unknown>; unsubscribe(owner: string, params: unknown): Promise<unknown>; }
-export type McpExtension={tools?:typeof TOOLS;events?:Array<{name:string;description:string;delivery:string[];inputSchema:Schema;payloadSchema:Schema}>;call?:(name:string,args:unknown,owner:string)=>Promise<{handled:boolean;data?:unknown}>};
+export type McpExtension={tools?:typeof TOOLS;resources?:{list:()=>unknown[];read:(uri:unknown)=>unknown[]};events?:Array<{name:string;description:string;delivery:string[];inputSchema:Schema;payloadSchema:Schema}>;call?:(name:string,args:unknown,owner:string)=>Promise<{handled:boolean;data?:unknown}>};
+function completeResult(method:string,params:unknown,result:unknown){
+  const meta=(params as {_meta?:Record<string,unknown>})?._meta;
+  if(method!=='server/discover'&&meta?.['io.modelcontextprotocol/protocolVersion']!=='2026-07-28')return result;
+  const value=result as Record<string,unknown>;
+  const completed:Record<string,unknown>={...value,resultType:'complete',_meta:{...(value._meta as Record<string,unknown>|undefined),'io.modelcontextprotocol/serverInfo':{name:'stats-synthetic-loop',version:'0.4.0'}},
+    ...(['server/discover','tools/list','resources/list','resources/read','resources/templates/list'].includes(method)?{ttlMs:0,cacheScope:'private'}:{})};
+  if(method==='server/discover')delete completed.serverInfo;
+  return completed;
+}
 export async function rpc(bridge: Bridge, owner: string | null, body: unknown, events?: EventProtocol, extension:McpExtension={}) {
   const call = body as { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
   const id = call?.id ?? null;
@@ -23,13 +32,15 @@ export async function rpc(bridge: Bridge, owner: string | null, body: unknown, e
     const method = call.method;
     if (owner) await bridge.store.noteMethod(principal(owner), method);
     let result: unknown;
-    if (method === 'server/discover') result = { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {} }, serverInfo: { name: 'stats-synthetic-loop', version: '0.1.0' } };
-    else if (method === 'initialize') result = { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'stats-synthetic-loop', version: '0.1.0' } };
+    if (method === 'server/discover') result = { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {},...(extension.resources?{resources:{}}:{}) }, serverInfo: { name: 'stats-synthetic-loop', version: '0.4.0' } };
+    else if (method === 'initialize') result = { protocolVersion: '2025-03-26', capabilities: { tools: {},...(extension.resources?{resources:{}}:{}) }, serverInfo: { name: 'stats-synthetic-loop', version: '0.4.0' } };
     else if (method === 'notifications/initialized' || method === 'ping') result = {};
     else if (method === 'tools/list') result = { tools: extension.tools??TOOLS };
     else {
       const user = principal(owner);
-      if (method === 'events/list') result = { events: extension.events??[EVENT] };
+      if(method==='resources/list'&&extension.resources)result={resources:extension.resources.list()};
+      else if(method==='resources/read'&&extension.resources)result={contents:extension.resources.read((call.params as {uri?:unknown})?.uri)};
+      else if (method === 'events/list') result = { events: extension.events??[EVENT] };
       else if (method === 'events/subscribe' || method === 'events/unsubscribe') {
         if (!events) throw new Fault(CALLBACK_GATE, 503, -32014);
         result = method === 'events/subscribe' ? await events.subscribe(user, call.params) : await events.unsubscribe(user, call.params);
@@ -50,7 +61,7 @@ export async function rpc(bridge: Bridge, owner: string | null, body: unknown, e
         result = { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: false };
       } else throw new Fault('method_not_found', 404, -32601);
     }
-    return { jsonrpc: '2.0', id, result };
+    return { jsonrpc: '2.0', id, result:completeResult(method,call.params,result) };
   } catch (error) {
     const fault = error instanceof Fault ? error : new Fault('storage_unavailable', 503, -32603);
     return { jsonrpc: '2.0', id, error: { code: fault.code, message: fault.code === -32014 ? 'Unsupported' : fault.reason, data: { reason: fault.reason, ...(fault.code === -32014 ? { feature: 'callbackTransport' } : {}) } } };

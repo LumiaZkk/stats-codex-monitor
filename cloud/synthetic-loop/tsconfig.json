@@ -20,6 +20,7 @@
     "bridge/**/*.mts",
     "tests/**/*.mts",
     "scripts/**/*.mts",
-    "tunnel/**/*.mts"
+    "tunnel/**/*.mts",
+    "ui/**/*.mts"
   ]
 }

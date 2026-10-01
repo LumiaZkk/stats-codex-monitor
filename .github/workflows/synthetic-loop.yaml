@@ -22,6 +22,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm run typecheck
+      - run: npm run check:panel
   official-tunnel-local-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -34,6 +35,8 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - run: npm run build:panel
       - name: Download and verify official client for isolated local test
         run: |
           curl --fail --location --max-time 90 https://github.com/openai/tunnel-client/releases/download/v0.0.15/tunnel-client-v0.0.15-linux-amd64.zip -o "$RUNNER_TEMP/tunnel-client.zip"
