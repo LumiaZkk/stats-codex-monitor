@@ -21,4 +21,3 @@ if ! "$build_dir/ui-test" -AppleLanguages '(en)' build/ui-checks; then
     exit 1
 fi
 "$build_dir/ui-test" -AppleLanguages '(zh-Hans)' --chinese build/ui-checks
-
