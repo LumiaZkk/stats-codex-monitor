@@ -36,10 +36,13 @@ func snapshot(_ name: String) throws {
     // NSView caching preserves transparency. Composite onto the app background in
     // AppKit so artifact viewers do not accidentally render black text on black.
     guard let canvas = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: bitmap.pixelsWide, pixelsHigh: bitmap.pixelsHigh, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: canvas) else { fatalError("Canvas unavailable") }
-    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
-    NSColor.windowBackgroundColor.setFill(); NSBezierPath(rect: view.bounds).fill()
-    bitmap.draw(in: view.bounds)
-    context.flushGraphics(); NSGraphicsContext.restoreGraphicsState()
+    context.cgContext.setFillColor(CGColor(gray: 1, alpha: 1))
+    context.cgContext.fill(view.bounds)
+    context.cgContext.setBlendMode(.normal)
+    guard let rendered = bitmap.cgImage else { fatalError("Rendered image unavailable") }
+    context.cgContext.draw(rendered, in: view.bounds)
+    context.flushGraphics()
+    check(canvas.colorAt(x: 0, y: 0)?.alphaComponent == 1, "Artifact has an opaque inspection background")
     guard let png = canvas.representation(using: .png, properties: [:]) else { fatalError("PNG render unavailable") }
     try png.write(to: output.appendingPathComponent((zh ? "zh-" : "en-") + name + ".png"))
 }
