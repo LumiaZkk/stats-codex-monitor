@@ -19,6 +19,11 @@ let controller = SyntheticRoundtripController(directory: directory, capture: { _
 })
 func run(_ selector: String) { controller.perform(NSSelectorFromString(selector)) }
 func pump(_ seconds: TimeInterval = 0.05) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+func waitUntil(_ condition: () -> Bool, _ name: String) {
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while !condition(), ProcessInfo.processInfo.systemUptime < deadline { pump(0.02) }
+    check(condition(), name)
+}
 func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
 func window() -> NSWindow { app.windows.first { $0.isVisible && $0.contentView != nil }! }
 func visibleText() -> String { descendants(window().contentView!).compactMap { ($0 as? NSTextField)?.stringValue }.joined(separator: "\n") }
@@ -59,8 +64,7 @@ check(visibleText().contains(zh ? "正在查找" : "Finding"), "Click immediatel
 check(!button(zh ? "发送测试" : "Send test").isEnabled, "Send visibly disabled while discovering")
 run("sendSynthetic")
 try snapshot("finding")
-pump(0.3)
-check(visibleText().contains(zh ? "尚未连接本机运行端" : "Local connection unavailable"), "Missing runtime is an obvious state")
+waitUntil({ visibleText().contains(zh ? "尚未连接本机运行端" : "Local connection unavailable") }, "Missing runtime is an obvious state")
 lock.lock(); let firstCalls = calls; lock.unlock()
 check(firstCalls == 1, "Repeated click did not submit another discovery")
 check(button(zh ? "发送合成测试" : "Send synthetic test").isEnabled, "Retry possible after failure")
