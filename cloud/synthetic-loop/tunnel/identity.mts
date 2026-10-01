@@ -1,9 +1,9 @@
 import { digest, Fault } from '../bridge/core.mts';
-export type Scope = { tunnel_id: string; organization_id: string; workspace_id: string; mode: 'exclusive_personal_synthetic' };
+export type Scope = { tunnel_id: string; organization_id: string; workspace_id: string; mode: 'exclusive_personal_synthetic'|'exclusive_personal_global_diagnostics_v1' };
 export type Lease = { scope: Scope; verified_at: number; valid_until: number; run_until: number };
 export function validateScope(value: unknown): asserts value is Scope {
   const s = value as Scope;
-  if (!s || Object.keys(s).sort().join(',') !== 'mode,organization_id,tunnel_id,workspace_id' || s.mode !== 'exclusive_personal_synthetic' || !/^tunnel_[a-z0-9]{32}$/.test(s.tunnel_id) || !/^org-[a-zA-Z0-9]+$/.test(s.organization_id) || !/^[0-9a-f-]{36}$/.test(s.workspace_id)) throw new Fault('invalid_exclusive_scope');
+  if (!s || Object.keys(s).sort().join(',') !== 'mode,organization_id,tunnel_id,workspace_id' || !['exclusive_personal_synthetic','exclusive_personal_global_diagnostics_v1'].includes(s.mode) || !/^tunnel_[a-z0-9]{32}$/.test(s.tunnel_id) || !/^org-[a-zA-Z0-9]+$/.test(s.organization_id) || !/^[0-9a-f-]{36}$/.test(s.workspace_id)) throw new Fault('invalid_exclusive_scope');
 }
 // Exact official v0.0.15 admin JSON: pkg/controlplane/admin/types.go, Tunnel.
 export function verifyMetadata(scope: Scope, value: unknown) {

@@ -1,6 +1,12 @@
-# Synthetic same-dot roundtrip spike
+# Diagnostic request and proposal bridge
 
-This is a protocol prototype, not a completed monitor integration. No telemetry is accepted and no Mac action can execute.
+The private foreground tunnel supports a bounded global diagnostic protocol in
+addition to the synthetic test route. Real data is disabled by default. An
+explicitly approved `exclusive_personal_global_diagnostics_v1` scope enables
+timestamped host readings, bounded resource consumers, eligible GUI app targets
+and local receipts. The cloud can propose a normal app quit, observation or no
+action; it has no execution endpoint. Native approval and identity checks remain
+mandatory. See [the real contract](tunnel/REAL_DIAGNOSTIC_CONTRACT.md).
 
 ## Current state
 
@@ -8,7 +14,8 @@ This is a protocol prototype, not a completed monitor integration. No telemetry 
 - The private Site is a discovery/read/proposal probe. Its `events/subscribe` returns MCP `Unsupported` (-32014), feature `callbackTransport`, reason `callback_transport_unverified`. It does not accept, store or use callback secrets.
 - A separate private foreground runtime using official Secure MCP Tunnel completed a real synthetic roundtrip on 2026-09-30: local trigger → signed event → intended dot wake → request read → strict plan write → local result retrieval with matching hashes. This acceptance does not cover native action execution or persistent operation. See `tunnel/README.md`.
 - Signed-in browser file transfer remains an explicit fallback; see `TRANSFER.md` for its manual steps and unsigned-file boundary. The private runtime also implements the bound native socket contract in `tunnel/NATIVE_SOCKET.md`.
-- There is no native pairing, telemetry upload, persistent Mac agent, model-provider credential, server execute endpoint or shell field. Native offline import/export and separately approved local checks are developed independently.
+- The public Sites deployment remains synthetic-only. Real diagnostics are available only through the approved private foreground tunnel scope and bound same-user native socket. No persistent Mac service, server execute endpoint or shell field is introduced.
+- Real-schema tests use public fake fixtures. Local and CI test results do not establish that a real application was closed or that the current dot received a real diagnostic. Those are separate live acceptance checks.
 
 ## Contract and security
 

@@ -1,4 +1,4 @@
-// Foreground, one-hour synthetic test. The runtime key is process-only.
+// Foreground, one-hour diagnostic runtime. The runtime key is process-only.
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, writeFile, rename, rm, chmod } from 'node:fs/promises';
@@ -67,7 +67,7 @@ try {
   const exited = new Promise<void>((res,rej)=>{ client!.once('error',rej); client!.once('exit',code=>code === 0 || cancelled.signal.aborted ? res() : rej(new Error('client_stopped'))); });
   interval=setInterval(()=>{ if(checking || stopped)return; checking=true; void verify().catch(()=>{process.stderr.write('Tunnel access changed or expired; stopping safely.\n');cancel();}).finally(()=>{checking=false;});},30_000);
   deadline=setTimeout(cancel,Math.max(0,runUntil-Date.now()));
-  process.stdout.write(`Synthetic tunnel test launched (readiness not yet verified). Private run directory: ${runDir}\n`);
+  process.stdout.write(`Stats diagnostic tunnel launched (readiness not yet verified; data scope: ${scope.mode}). Private run directory: ${runDir}\n`);
   process.stdout.write('Keep this terminal open. Ctrl-C stops the test and removes temporary credentials/subscriptions.\n');
   await exited;
 } catch { process.stderr.write(`Tunnel test stopped at ${stage}. Verify the narrow runtime scope and local readiness. No key was logged.\n`); process.exitCode=1; }

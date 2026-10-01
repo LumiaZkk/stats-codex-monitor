@@ -5,7 +5,9 @@ import { spawn } from 'node:child_process';
 import { randomUUID,createHash } from 'node:crypto';
 import { makeNativeFixture } from '../bridge/transfer.mts';
 import { runtimeDescriptorCachePath,validateRuntimeDescriptor } from '../tunnel/rendezvous.mts';
-import { digest } from '../bridge/core.mts';
+import { canonical,digest } from '../bridge/core.mts';
+import { realStringHash,validateRealResult } from '../bridge/real-contract.mts';
+import type { RealDiagnosticBody,RealRequestEnvelope,RealResultBundle } from '../bridge/real-contract.mts';
 import type { NativeTransferRequest } from '../bridge/core.mts';
 import type { NativeSocketStatus } from '../tunnel/native-protocol.mts';
 import { mkdtemp,readFile,writeFile,rm,readdir,realpath } from 'node:fs/promises';
@@ -15,7 +17,7 @@ import { join,resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const binary=process.env.TUNNEL_CLIENT_BIN;if(!binary)throw new Error('Verified official binary required');
 process.umask(0o077);const dir=await realpath(await mkdtemp(join(tmpdir(),'stats-private-probe-')));
-const now=Date.now(),lease={scope:{mode:'exclusive_personal_synthetic',tunnel_id:'tunnel_'+'a'.repeat(32),organization_id:'org-test',workspace_id:'11111111-1111-4111-8111-111111111111'},verified_at:now,valid_until:now+90_000,run_until:now+3_600_000};
+const now=Date.now(),lease={scope:{mode:'exclusive_personal_global_diagnostics_v1',tunnel_id:'tunnel_'+'a'.repeat(32),organization_id:'org-test',workspace_id:'11111111-1111-4111-8111-111111111111'},verified_at:now,valid_until:now+90_000,run_until:now+3_600_000};
 await writeFile(join(dir,'access.json'),JSON.stringify(lease),{mode:0o600});
 const server=fileURLToPath(new URL('../tunnel/stdio.mts',import.meta.url));
 const child=spawn(resolve(binary),['dev','proxy','--backend','go','--duration','45s','--mcp-command',`${process.execPath} ${server}`,'--url-file',join(dir,'proxy.json')],{env:{PATH:process.env.PATH,HOME:dir,XDG_CONFIG_HOME:dir,NODE_ENV:'test',STATS_TUNNEL_RUN_DIR:dir,STATS_RUNTIME_USER_HOME:dir},stdio:['ignore','ignore','pipe'],detached:process.platform!=='win32'});
@@ -63,9 +65,27 @@ try{
   const uncertainClient=makeNativeFixture(new Date().toISOString(),new Date(Date.now()+60_000).toISOString(),randomUUID());
   await assert.rejects(local({schema_version:1,op:'cancel_native',client_request:uncertainClient}),/not_found/);
   await assert.rejects(local({schema_version:1,op:'diagnose_native',client_request:uncertainClient}),/request_cancelled/);
+  // These are public fake golden metrics, not measurements of the CI machine.
+  // Only the production socket/MCP path is real in this isolated probe.
+  const realFixture=JSON.parse(await readFile(new URL('../fixtures/real-request-v1.json',import.meta.url),'utf8')) as RealRequestEnvelope;
+  const shift=(v:unknown):unknown=>typeof v==='string'&&/^2026-10-01T\d\d:\d\d:\d\d\.\d{3}Z$/.test(v)?new Date(Date.parse(v)+now-Date.parse('2026-10-01T10:00:02.000Z')).toISOString():Array.isArray(v)?v.map(shift):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,shift(x)])):v;
+  const realBody=shift(JSON.parse(realFixture.client_request_json)) as RealDiagnosticBody;realBody.client_request_id=randomUUID();
+  const realText=canonical(realBody),realClient={...realFixture,client_request_json:realText,client_request_hash:realStringHash(realText)};
+  const realCommand=(op:string,extra:Record<string,unknown>={}):Record<string,unknown>=>({schema_version:2,op,expected_instance_id:descriptor.instance_id,...(op==='receipt_real'?{client_request_id:realBody.client_request_id,client_request_hash:realClient.client_request_hash,request_id:realCreated.request_id,request_hash:realCreated.request_hash}:{client_request:realClient}),...extra});
+  type RealStatus={request_id:string;request_hash:string;status:string;bundle:RealResultBundle|null;receipt:{receipt_id:string;receipt_hash:string}|null};
+  const realCreated:RealStatus=await local<RealStatus>(realCommand('diagnose_real'));assert.equal(realCreated.status,'requested');
+  assert.deepEqual(await local<RealStatus>(realCommand('diagnose_real')),realCreated);
+  const realRead=await call('tools/call',{name:'get_diagnostic_request',arguments:{request_id:realCreated.request_id}});assert.equal(realRead.result?.structuredContent.request_hash,realCreated.request_hash);
+  const realPlan={schema_version:2,request_id:realCreated.request_id,request_hash:realCreated.request_hash,plan_id:randomUUID(),expires_at:realBody.expires_at,dry_run:false,requires_local_approval:true,policy_id:'local_capabilities_v1',decision:'no_action',summary:'Fixture-only production transport probe; no native action.',actions:[]};
+  assert.equal((await call('tools/call',{name:'submit_diagnostic_plan',arguments:realPlan})).result?.structuredContent.status,'proposed');
+  const realResult=await local<RealStatus>(realCommand('result_real'));assert.ok(realResult.bundle);validateRealResult(realResult.bundle,Date.now(),realClient);
+  const receipt={schema_version:1,kind:'stats_real_receipt',receipt_id:randomUUID(),client_request_id:realBody.client_request_id,request_id:realCreated.request_id,request_hash:realCreated.request_hash,plan_id:realPlan.plan_id,plan_hash:digest(realPlan),candidate_id:null,policy_id:'local_capabilities_v1',started_at:new Date(now).toISOString(),completed_at:new Date(now).toISOString(),local_approval_at:null,outcome:'no_action',quit_requested:false,process_exit_confirmed:false,before:{observed_at:realBody.created_at,snapshot:realBody.snapshot,candidate:null},after:null};
+  const receiptText=canonical(receipt),receiptEnvelope={schema_version:1,kind:'stats_real_receipt_envelope',receipt_json:receiptText,receipt_hash:realStringHash(receiptText)};
+  const receiptAck=await local<RealStatus>(realCommand('receipt_real',{receipt:receiptEnvelope}));assert.deepEqual(receiptAck.receipt,{receipt_id:receipt.receipt_id,receipt_hash:receiptEnvelope.receipt_hash});
+  assert.equal((await local<RealStatus>(realCommand('cancel_real'))).status,'cancelled');
   await writeFile(join(dir,'access.json'),JSON.stringify({...lease,valid_until:Date.now()-1}),{mode:0o600});
   let rejected=false;try{rejected=Boolean((await call('tools/list')).error);}catch{rejected=true;}assert(rejected,'Expired access must reject calls or close the transport');
-  process.stdout.write(JSON.stringify({private_local_socket_roundtrip:'passed',native_envelope_socket_roundtrip:'passed',rendezvous_bound_protocol_v2:'passed',official_mcp_transport:'passed',invalid_callback_rejected:true,expired_access_rejected:true,hosted_tunnel:'not_tested',current_dot_wake:'not_tested',native_execution:'not_tested'})+'\n');
+  process.stdout.write(JSON.stringify({private_local_socket_roundtrip:'passed',native_envelope_socket_roundtrip:'passed',rendezvous_bound_protocol_v2:'passed',real_schema_fixture_roundtrip:'passed',receipt_return:'passed',official_mcp_transport:'passed',invalid_callback_rejected:true,expired_access_rejected:true,hosted_tunnel:'not_tested',current_dot_wake:'not_tested',native_execution:'not_tested',real_telemetry_used:false})+'\n');
 }finally{
   process.removeListener('SIGINT',cancel);process.removeListener('SIGTERM',cancel);
   const stop=(s:NodeJS.Signals)=>{try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,s);else child.kill(s);}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e;}};

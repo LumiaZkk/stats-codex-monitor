@@ -4,6 +4,7 @@ import { D1Store } from '../bridge/d1-store.mts';
 import { canonical, Fault, validateNativeRequest } from '../bridge/core.mts';
 import type { NativeTransferRequest, RecordRow } from '../bridge/core.mts';
 import type { Subscription, SubscriptionStore } from '../bridge/events.mts';
+import { initializeRealTables } from './real-store.mts';
 export function privateFile(path: string, directory = false) {
   const s = lstatSync(path);
   if (s.isSymbolicLink() || (directory ? !s.isDirectory() : !s.isFile()) || (s.mode & 0o077) !== 0 || (process.getuid && s.uid !== process.getuid())) throw new Fault('private_file_required');
@@ -22,6 +23,7 @@ export class RuntimeStore {
     this.db.exec(readFileSync(new URL('../drizzle/0000_harsh_lord_hawal.sql', import.meta.url), 'utf8').replaceAll('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS ').replaceAll('CREATE UNIQUE INDEX ', 'CREATE UNIQUE INDEX IF NOT EXISTS '));
     this.db.exec('CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS deliveries(event_id TEXT NOT NULL, subscription_id TEXT NOT NULL, rounds INTEGER NOT NULL DEFAULT 0, received INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(event_id,subscription_id));');
     this.db.exec('CREATE TABLE IF NOT EXISTS native_cancellations(owner TEXT NOT NULL, client_id TEXT NOT NULL, binding_json TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(owner,client_id));');
+    initializeRealTables(this.db);
     const db = this.db;
     const d1 = { prepare(sql: string) { return { bind(...args: unknown[]) { const s = db.prepare(sql); return { run: async () => s.run(...args as []), first: async () => s.get(...args as []) ?? null, all: async () => ({ results: s.all(...args as []) }) }; } }; } } as unknown as D1Database;
     this.requests = new BoundedRequestStore(d1,r=>{this.checkCapacity(r.owner,r.idempotencyKey);const cancelled=this.nativeCancellation(r.owner,r.idempotencyKey);if(cancelled){if(canonical(r.request.client_request??null)!==cancelled.binding_json)throw new Fault('idempotency_conflict',409);throw new Fault('request_cancelled',409);}});
@@ -35,7 +37,7 @@ export class RuntimeStore {
     this.db.prepare('DELETE FROM subscriptions WHERE expires_at <= ?').run(now);
     this.db.prepare('DELETE FROM diagnostic_requests WHERE expires_at <= ?').run(new Date(now - 86_400_000).toISOString());
     this.db.prepare('DELETE FROM native_cancellations WHERE expires_at <= ?').run(new Date(now - 86_400_000).toISOString());
-    this.db.exec('DELETE FROM deliveries WHERE event_id NOT IN (SELECT event_id FROM diagnostic_requests) OR subscription_id NOT IN (SELECT id FROM subscriptions)');
+    this.db.exec('DELETE FROM deliveries WHERE event_id NOT IN (SELECT event_id FROM diagnostic_requests UNION ALL SELECT event_id FROM real_diagnostic_requests UNION ALL SELECT receipt_event_id FROM real_diagnostic_requests WHERE receipt_event_id IS NOT NULL) OR subscription_id NOT IN (SELECT id FROM subscriptions)');
   }
   checkCapacity(owner: string, key: string) { this.prune(); if(this.db.prepare('SELECT request_id FROM diagnostic_requests WHERE owner=? AND idempotency_key=?').get(owner,key))return; if (Number(this.db.prepare('SELECT count(*) AS n FROM diagnostic_requests').get()!.n) >= 100) throw new Fault('request_limit'); }
   nativeCancellation(owner:string,clientId:string) {return this.db.prepare('SELECT binding_json FROM native_cancellations WHERE owner=? AND client_id=?').get(owner,clientId) as {binding_json:string}|undefined;}

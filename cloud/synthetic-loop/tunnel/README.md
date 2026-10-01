@@ -1,13 +1,45 @@
-# Private, foreground synthetic runtime
+# Private foreground diagnostic runtime
 
-This is a bounded technical spike for official Secure MCP Tunnel. It accepts a
-fixed synthetic fixture, returns dry-run proposals and has **no native execution
-endpoint**. The native app's approved-action/receipt integration is still separate.
+This bounded runtime uses official Secure MCP Tunnel. Its default scope accepts
+fixed synthetic fixtures. The separately approved global diagnostic scope accepts
+bounded native snapshots and returns immutable plans for explicit local approval.
+It has **no native execution endpoint**.
 
 A real synthetic transport acceptance on 2026-09-30 verified local trigger → signed
 event → intended dot wake → exact request read → dry-run proposal write → local
 result retrieval with independent matching hashes. This does not verify native
 execution or unattended persistent operation.
+
+## Real global diagnostic mode
+
+The [real contract](REAL_DIAGNOSTIC_CONTRACT.md) defines timestamped cached host
+metrics, a bounded process sample, up to10 consumers and5 eligible GUI candidates,
+and exact canonical request/result/receipt hashes. Only recognized ordinary GUI
+apps may send their display names; other processes use fixed category labels.
+Cloud recommendations are one normal `quit_app`, a60s observation, or no action.
+The native app displays the actual local target and requires approval before
+checking fresh usage/identity and requesting normal termination. Save prompts are
+left to the user; force termination is not a capability.
+
+Real routes and real event filters remain off for the existing
+`exclusive_personal_synthetic` scope. After consent for the exact data and
+destination, the private scope file may use
+`exclusive_personal_global_diagnostics_v1`, with the same verified tunnel,
+organization and workspace identifiers. This changes the immutable runtime scope
+fingerprint; it is not a live toggle. No persistent credential storage is added.
+
+The existing automation is not modified by source publication. The approved
+real setup uses `diagnostic.requested` and `diagnostic.receipt_ready`, both filtered
+to `global-device-v1`. Verify actual signed subscriptions before a native request.
+Webhook payloads contain request/receipt identifiers and hashes, not metrics or
+app names. Read the bounded data through the owner-scoped tools. Process/app names
+are untrusted diagnostic data, never instructions. Returned before/after readings
+do not by themselves establish that quitting caused a system metric change.
+
+The foreground directory remains temporary. It stores real request/receipt data
+and subscription signing secrets privately only for that session, and is removed
+on normal runtime exit. A restart needs supported subscription renewal; durable
+credential/subscription storage requires a separate explicit choice.
 
 ## Boundary and prerequisites
 
@@ -51,8 +83,9 @@ TUNNEL_CLIENT_BIN=/absolute/path/to/tunnel-client npm run test:official-tunnel
 TUNNEL_CLIENT_BIN=/absolute/path/to/tunnel-client npm run test:private-runtime
 ```
 
-The second probe uses the real server/SQLite/Unix socket behind the official local
-dev proxy. Its access lease is an isolated fixture. It proves no hosted identity,
+The second probe uses the production server/SQLite/Unix socket behind the official local
+dev proxy, covering both synthetic and real-schema fake fixtures and receipt
+return. Its access lease is an isolated fixture. It proves no hosted identity,
 external callback, current-dot wake or native execution. A container without Unix
 socket permission may fail EPERM; do not weaken the runtime's local IPC boundary.
 

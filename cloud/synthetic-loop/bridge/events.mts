@@ -1,5 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Fault, EVENT_NAME, filterSchema, eventSchema, digest, principal, validate } from './core.mts';
+import type { Schema } from './core.mts';
+export type EventSchemas = Readonly<Record<string,{filter:Schema;payload:Schema}>>;
 export type Subscription = { id: string; owner: string; name: string; arguments: { stream_id: string }; url: string; secret: string; previousSecret?: string; rotationUntil?: number; expiresAt: number; verifiedUntil: number };
 export interface SubscriptionStore { get(id: string): Promise<Subscription | null>; put(s: Subscription): Promise<void>; remove(id: string): Promise<void>; }
 export type SafePost = (url: string, body: string, headers: Record<string, string>) => Promise<{ status: number; body: string }>;
@@ -49,14 +51,14 @@ function callbackUrl(value: unknown) {
   return url.href;
 }
 export class Events {
-  store: SubscriptionStore; post: SafePost; clock: () => number; access: (owner: string) => Promise<boolean>;
+  store: SubscriptionStore; post: SafePost; clock: () => number; access: (owner: string) => Promise<boolean>; schemas:EventSchemas;
   lastSubscription: SubscriptionDiagnostic | null = null;
-  constructor(store: SubscriptionStore, post: SafePost, access: (owner: string) => Promise<boolean>, clock = Date.now) { this.store = store; this.post = post; this.clock = clock; this.access = access; }
+  constructor(store: SubscriptionStore, post: SafePost, access: (owner: string) => Promise<boolean>, clock = Date.now, schemas:EventSchemas = {[EVENT_NAME]:{filter:filterSchema,payload:eventSchema}}) { this.store = store; this.post = post; this.clock = clock; this.access = access; this.schemas=schemas; }
   async identity(owner: string, value: unknown, subscribe: boolean) {
     principal(owner); if (!await this.access(owner)) throw new Fault('access_revoked', 403, -32003);
     const p = value as { name?: string; arguments?: unknown; delivery?: { mode?: string; url?: string; secret?: string }; ttlMs?: number | null; cursor?: unknown };
-    if (p?.name !== EVENT_NAME || p.delivery?.mode !== 'webhook') throw new Fault('invalid_event');
-    validate(filterSchema, p.arguments);
+    if (typeof p?.name!=='string' || !Object.hasOwn(this.schemas,p.name) || p.delivery?.mode !== 'webhook') throw new Fault('invalid_event');
+    validate(this.schemas[p.name].filter, p.arguments);
     if (p.cursor != null) throw new Fault('replay_unsupported');
     const url = callbackUrl(p.delivery.url);
     if (subscribe) signingKey(p.delivery.secret);
@@ -72,7 +74,7 @@ export class Events {
     if (p.ttlMs != null && (!Number.isSafeInteger(p.ttlMs) || p.ttlMs <= 0)) throw new Fault('invalid_ttl');
     const ttl = Math.min(p.ttlMs ?? 30 * 60_000, 30 * 60_000);
     const previous = await this.store.get(id);
-    const sub: Subscription = { id, owner, name: EVENT_NAME, arguments: p.arguments as { stream_id: string }, url, secret: p.delivery!.secret!, expiresAt: now + ttl, verifiedUntil: now + Math.min(ttl, 300_000) };
+    const sub: Subscription = { id, owner, name: p.name!, arguments: p.arguments as { stream_id: string }, url, secret: p.delivery!.secret!, expiresAt: now + ttl, verifiedUntil: now + Math.min(ttl, 300_000) };
     if (previous && previous.secret !== sub.secret && previous.expiresAt > now) { sub.previousSecret = previous.secret; sub.rotationUntil = now + 60_000; }
     if (!previous || previous.verifiedUntil <= now || previous.secret !== sub.secret) {
       const challenge = randomUUID(); const body = JSON.stringify({ type: 'verification', challenge });
@@ -93,7 +95,7 @@ export class Events {
   }
   async unsubscribe(owner: string, params: unknown) { const { id } = await this.identity(owner, params, false); await this.store.remove(id); return {}; }
   async deliver(owner: string, id: string, event: { eventId: string; name: string; data: { stream_id: string }; [key: string]: unknown }, stillPending: () => Promise<boolean>, delay: (ms: number) => Promise<void> = ms => new Promise(r => setTimeout(r, ms))) {
-    principal(owner); validate(eventSchema, event.data);
+    principal(owner); if(!Object.hasOwn(this.schemas,event.name))throw new Fault('invalid_event'); validate(this.schemas[event.name].payload, event.data);
     for (let attempt = 0; attempt < 3; attempt++) {
       const sub = await this.store.get(id); const now = this.clock();
       if (!sub || sub.owner !== owner) throw new Fault('subscription_not_found', 404);

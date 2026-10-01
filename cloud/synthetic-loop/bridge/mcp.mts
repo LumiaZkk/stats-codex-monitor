@@ -14,7 +14,8 @@ export const TOOLS = [
 ];
 export const EVENT = { name: EVENT_NAME, description: 'A fixed synthetic diagnostic request was created in the synthetic test stream. Hosted callback delivery is gated until a verified transport is available.', delivery: ['webhook'], inputSchema: filterSchema, payloadSchema: eventSchema };
 export interface EventProtocol { subscribe(owner: string, params: unknown): Promise<unknown>; unsubscribe(owner: string, params: unknown): Promise<unknown>; }
-export async function rpc(bridge: Bridge, owner: string | null, body: unknown, events?: EventProtocol) {
+export type McpExtension={tools?:typeof TOOLS;events?:Array<{name:string;description:string;delivery:string[];inputSchema:Schema;payloadSchema:Schema}>;call?:(name:string,args:unknown,owner:string)=>Promise<{handled:boolean;data?:unknown}>};
+export async function rpc(bridge: Bridge, owner: string | null, body: unknown, events?: EventProtocol, extension:McpExtension={}) {
   const call = body as { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
   const id = call?.id ?? null;
   try {
@@ -25,20 +26,22 @@ export async function rpc(bridge: Bridge, owner: string | null, body: unknown, e
     if (method === 'server/discover') result = { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {} }, serverInfo: { name: 'stats-synthetic-loop', version: '0.1.0' } };
     else if (method === 'initialize') result = { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'stats-synthetic-loop', version: '0.1.0' } };
     else if (method === 'notifications/initialized' || method === 'ping') result = {};
-    else if (method === 'tools/list') result = { tools: TOOLS };
+    else if (method === 'tools/list') result = { tools: extension.tools??TOOLS };
     else {
       const user = principal(owner);
-      if (method === 'events/list') result = { events: [EVENT] };
+      if (method === 'events/list') result = { events: extension.events??[EVENT] };
       else if (method === 'events/subscribe' || method === 'events/unsubscribe') {
         if (!events) throw new Fault(CALLBACK_GATE, 503, -32014);
         result = method === 'events/subscribe' ? await events.subscribe(user, call.params) : await events.unsubscribe(user, call.params);
       } else if (method === 'tools/call') {
         const p = call.params as { name?: string; arguments?: unknown };
-        const t = TOOLS.find(t => t.name === p?.name); if (!t) throw new Fault('unknown_tool');
+        const t = (extension.tools??TOOLS).find(t => t.name === p?.name); if (!t) throw new Fault('unknown_tool');
         validate(t.inputSchema, p.arguments ?? {});
         const args = p.arguments as { request_id: string };
         let data: unknown;
-        if (p.name === 'get_bridge_status') data = { synthetic_only: true, stream_id: STREAM_ID, callback_delivery: events ? 'test_adapter' : 'blocked', blocker: events ? null : CALLBACK_GATE, same_dot_roundtrip: 'not_verified', execution: 'not_supported', transfer_mode: 'signed_in_browser_files', native_pairing: 'not_supported', observed_methods: await bridge.store.methods(user) };
+        const extra=await extension.call?.(p.name!,p.arguments??{},user);
+        if(extra?.handled)data=extra.data;
+        else if (p.name === 'get_bridge_status') data = { synthetic_only: true, stream_id: STREAM_ID, callback_delivery: events ? 'test_adapter' : 'blocked', blocker: events ? null : CALLBACK_GATE, same_dot_roundtrip: 'not_verified', execution: 'not_supported', transfer_mode: 'signed_in_browser_files', native_pairing: 'not_supported', observed_methods: await bridge.store.methods(user) };
         else if (p.name === 'create_synthetic_request') data = await bridge.create(user, p.arguments);
         else if (p.name === 'import_synthetic_request') data = await importNativeRequest(bridge, user, p.arguments);
         else if (p.name === 'get_native_result_bundle') data = await exportNativeResult(bridge, user, args.request_id);

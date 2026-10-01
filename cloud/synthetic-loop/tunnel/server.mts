@@ -1,4 +1,4 @@
-// Real synthetic-only private runtime. Its owner boundary is the verified exclusive
+// Private diagnostic runtime, synthetic-only by default. Its owner boundary is the verified exclusive
 // personal tunnel, not an invented per-request header or an unauthenticated web port.
 import { readFileSync, chmodSync, existsSync, lstatSync, unlinkSync } from 'node:fs';
 import { createServer, connect } from 'node:net';
@@ -20,13 +20,15 @@ import { callbackTransport } from './resolver.mts';
 import type { CallbackResolver } from './resolver.mts';
 import { consumeStdio } from './stdio-input.mts';
 import { LocalRequestFrame, NATIVE_OPS, nativeLocal, localResultFrame, boundNativeSocketCommandSchema, nativeHelloSchema } from './native-protocol.mts';
+import { RealBridge } from './real-store.mts';
+import { REAL_OPS,realEventSchemas,realExtension,realLocal,realSocketCommandSchema,assertRealEnabled } from './real-protocol.mts';
 
 export class SyntheticRuntime {
-  store: RuntimeStore; bridge: Bridge; events: Events; access: () => string; busy = false; resolver: CallbackResolver; identity?: RuntimeIdentity;
-  constructor(store: RuntimeStore, access: () => string, post: SafePost = pinnedHttpsPost, resolver: CallbackResolver = 'system', identity?: RuntimeIdentity) {
+  store: RuntimeStore; bridge: Bridge; real:RealBridge; events: Events; access: () => string; busy = false; resolver: CallbackResolver; identity?: RuntimeIdentity; readonly realEnabled:boolean;
+  constructor(store: RuntimeStore, access: () => string, post: SafePost = pinnedHttpsPost, resolver: CallbackResolver = 'system', identity?: RuntimeIdentity,realEnabled=false) {
     this.resolver=resolver;this.identity=identity ? Object.freeze({...identity}) : undefined;
-    this.store = store; this.access = access; this.bridge = new Bridge(store.requests);
-    this.events = new Events(store.subscriptions, post, async owner => { try { return access() === owner; } catch { return false; } });
+    this.store = store; this.access = access; this.bridge = new Bridge(store.requests);this.real=new RealBridge(store.db,()=>this.bridge.clock());this.realEnabled=realEnabled;
+    this.events = new Events(store.subscriptions, post, async owner => { try { return access() === owner; } catch { return false; } },Date.now,realEnabled?realEventSchemas:undefined);
   }
   async create(input: unknown) { const result = await this.bridge.create(this.access(), input); void this.pump(); return result; }
   async pump() {
@@ -41,17 +43,22 @@ export class SyntheticRuntime {
           catch (e) { if(e instanceof Fault && ['callback_rejected','callback_gone','subscription_not_found','subscription_inactive','request_terminal','event_filter_mismatch'].includes(e.reason))this.store.reject(event.eventId,sub.id); /* No callback URL, payload or secret logged. */ }
         }
       }
+      if(this.realEnabled)for(const id of this.real.pending(owner))for(const event of this.real.events(owner,id))for(const sub of this.store.active(owner)){
+        if(sub.name!==event.name||sub.arguments.stream_id!==event.data.stream_id||!this.store.begin(event.eventId,sub.id))continue;
+        try{await this.events.deliver(owner,sub.id,event,async()=>this.access()===owner&&this.real.events(owner,id).some(e=>e.eventId===event.eventId));this.store.acknowledge(event.eventId,sub.id);}
+        catch(e){if(e instanceof Fault&&['callback_rejected','callback_gone','subscription_not_found','subscription_inactive','request_terminal','event_filter_mismatch'].includes(e.reason))this.store.reject(event.eventId,sub.id);}
+      }
     } catch { /* Expired access stops delivery. */ }
     finally { this.busy = false; }
   }
   async mcp(value: unknown) {
     const owner = this.access();
     const input = value as { method?: string; params?: { name?: string; arguments?: unknown } };
-    const result = await rpc(this.bridge,owner,value,this.events);
+    const result = await rpc(this.bridge,owner,value,this.events,this.realEnabled?realExtension(this.real):undefined);
     if ('result' in result && result.result && typeof result.result === 'object') {
-      if (input.method === 'events/list') (result.result as { events: { description: string }[] }).events[0].description = 'A fixed synthetic diagnostic fixture was created on the private local test runtime. No real metrics or native commands.';
+      if (input.method === 'events/list'&&!this.realEnabled) (result.result as { events: { description: string }[] }).events[0].description = 'A fixed synthetic diagnostic fixture was created on the private local test runtime. No real metrics or native commands.';
       if (input.method === 'tools/call' && input.params?.name === 'get_bridge_status') {
-        const data = { synthetic_only: true, identity_boundary: 'exclusive_personal_tunnel', callback_resolver:this.resolver, callback_delivery: this.store.active(owner).length ? 'verified_subscription' : 'awaiting_subscription', last_subscription_attempt: this.events.lastSubscription, same_dot_roundtrip: 'not_verified', native_execution: 'not_supported', transfer_mode: 'private_local_socket', observed_methods: await this.store.requests.methods(owner) };
+        const data = { synthetic_only: !this.realEnabled, real_data_scope:this.realEnabled?'global_diagnostics_v1':'disabled',identity_boundary: 'exclusive_personal_tunnel', callback_resolver:this.resolver, callback_delivery: this.store.active(owner).length ? 'verified_subscription' : 'awaiting_subscription',active_subscriptions:this.store.active(owner).map(s=>({event:s.name,stream_id:s.arguments.stream_id})), last_subscription_attempt: this.events.lastSubscription, same_dot_roundtrip: 'not_verified', native_execution: this.realEnabled?'explicit_local_approval_required':'not_supported', transfer_mode: 'private_local_socket', observed_methods: await this.store.requests.methods(owner) };
         result.result = { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: false };
       }
     }
@@ -70,6 +77,12 @@ export class SyntheticRuntime {
     if(p?.op==='hello_native'){
       validate(nativeHelloSchema,value);const identity=this.boundIdentity(p.expected_instance_id);
       return {schema_version:2 as const,kind:'stats_runtime_hello' as const,...identity,nonce:p.nonce!};
+    }
+    if(REAL_OPS.includes(p?.op as typeof REAL_OPS[number])){
+      assertRealEnabled(this.realEnabled);validate(realSocketCommandSchema,value);this.boundIdentity(p.expected_instance_id);
+      const result=realLocal(this.real,this.access(),value);
+      if(p.op==='diagnose_real'||p.op==='receipt_real')setImmediate(()=>void this.pump());
+      return result;
     }
     if(p?.schema_version===2 && NATIVE_OPS.includes(p.op as typeof NATIVE_OPS[number])){
       validate(boundNativeSocketCommandSchema,value);this.boundIdentity(p.expected_instance_id);
@@ -101,7 +114,7 @@ export async function serve(dir: string) {
   const access = () => {if(callbackLifetime.signal.aborted)throw new Fault('runtime_stopped');const lease=readLease(),owner=leasePrincipal(lease);if(owner!==initialPrincipal||lease.run_until!==initialLease.run_until)throw new Fault('runtime_scope_changed');return owner;};
   const uid=process.geteuid?.();if(uid===undefined||uid!==process.getuid?.())throw new Fault('unsupported_runtime_identity');
   const identity:RuntimeIdentity={instance_id:randomUUID(),protocol_version:2,uid,runtime_pid:process.pid,started_at:new Date().toISOString(),expires_at:new Date(initialLease.run_until).toISOString(),scope_hash:digest(initialLease.scope)};
-  const transport=callbackTransport(process.env.STATS_CALLBACK_RESOLVER,callbackLifetime.signal); const store = new RuntimeStore(join(dir,'state.sqlite')); const runtime = new SyntheticRuntime(store,access,transport.post,transport.mode,identity);
+  const transport=callbackTransport(process.env.STATS_CALLBACK_RESOLVER,callbackLifetime.signal); const store = new RuntimeStore(join(dir,'state.sqlite')); const runtime = new SyntheticRuntime(store,access,transport.post,transport.mode,identity,initialLease.scope.mode==='exclusive_personal_global_diagnostics_v1');
   const socketPath = join(dir,'native.sock');
   if(existsSync(socketPath)) {
     const s=lstatSync(socketPath);if(!s.isSocket() || (s.mode & 0o077)!==0 || (process.getuid && s.uid!==process.getuid()))throw new Fault('unsafe_socket_path');
