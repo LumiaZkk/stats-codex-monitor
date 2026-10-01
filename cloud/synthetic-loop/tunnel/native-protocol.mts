@@ -7,6 +7,9 @@ import { parseStrictJson } from '../bridge/json.mts';
 export const LOCAL_FRAME_MAX_BYTES=16_384;
 export const NATIVE_OPS=['diagnose_native','result_native','cancel_native'] as const;
 export const nativeSocketCommandSchema=object({schema_version:{const:1},op:{enum:NATIVE_OPS},client_request:nativeRequestSchema});
+const instanceUUID=nativeRequestSchema.properties!.client_request_id;
+export const boundNativeSocketCommandSchema=object({schema_version:{const:2},op:{enum:NATIVE_OPS},expected_instance_id:instanceUUID,client_request:nativeRequestSchema});
+export const nativeHelloSchema=object({schema_version:{const:2},op:{const:'hello_native'},expected_instance_id:instanceUUID,nonce:instanceUUID});
 export type NativeSocketStatus={schema_version:1;kind:'stats_native_socket_status';client_request_id:string;client_request_hash:string;request_id:string;request_hash:string;status:'requested'|'proposed'|'cancelled'|'expired';bundle:Awaited<ReturnType<typeof exportNativeResult>>|null};
 export async function nativeSocketStatus(bridge:Bridge,owner:string,client:NativeTransferRequest,id:string):Promise<NativeSocketStatus>{
   const result=await bridge.read(owner,id);

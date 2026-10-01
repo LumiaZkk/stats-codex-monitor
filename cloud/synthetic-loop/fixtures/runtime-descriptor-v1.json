@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"stats_runtime_descriptor","instance_id":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","protocol_version":2,"uid":501,"runtime_pid":42424,"started_at":"2026-10-01T06:00:00.000Z","expires_at":"2026-10-01T07:00:00.000Z","scope_hash":"1111111111111111111111111111111111111111111111111111111111111111","socket_path":"/private/tmp/stats-tunnel-fixture/native.sock"}

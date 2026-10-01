@@ -2,8 +2,10 @@
 
 This private transport accepts only the existing synthetic fixture envelope. It
 adds no credential storage, telemetry input or execution operation. The app
-selects the foreground run directory explicitly for its current session and uses
-`native.sock`; there is no global socket discovery or persistent pairing.
+discovers the active foreground runtime using the bounded descriptor and v2
+instance binding in [RUNTIME_DISCOVERY.md](RUNTIME_DISCOVERY.md). Its verified
+endpoint is still `native.sock`; there is no persistent pairing or auto launch.
+The v1 commands below remain compatible with explicit CLI/manual integrations.
 
 The app must check the directory is owner-only, the socket is mode 0600, neither
 is a symlink, and the connected peer has the same effective UID. Other processes

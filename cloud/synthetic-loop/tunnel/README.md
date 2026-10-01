@@ -110,7 +110,11 @@ The Unix socket is inside an owner-only directory and has mode 0600. Its only
 operations create the fixed fixture, retrieve a result or cancel it. No caller
 can send metrics, paths, process IDs, shell commands or executable actions.
 
-The native app uses the versioned [native socket contract](NATIVE_SOCKET.md) to
+Within an approved foreground session, the native app discovers the runtime through
+a bounded [nonsecret rendezvous descriptor](RUNTIME_DISCOVERY.md), so Diagnose does
+not require selecting a temporary directory. A fresh startup handshake and every
+v2 command bind to the same process instance. The native app uses the versioned
+[native socket contract](NATIVE_SOCKET.md) to
 submit its existing synthetic envelope and receive the same canonical result
 bundle as offline import. The original CLI commands remain supported.
 

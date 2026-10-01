@@ -56,7 +56,7 @@ test('real SQLite runtime persists bounded subscriptions, dry-run plans and deli
     store.close();store=new RuntimeStore(join(dir,'state.sqlite'));runtime=new SyntheticRuntime(store,access,post);
     assert.equal((await store.subscriptions.get(sub.id))!.owner,access());await runtime.pump();assert.equal(sent,1);
     const plan={schema_version:1,request_id:created.request.request_id,request_hash:created.request_hash,plan_id:randomUUID(),expires_at:created.request.expires_at,dry_run:true,summary:'Synthetic only',actions:[{type:'open_activity_monitor',target:'current_device',dry_run:true}]};
-    await runtime.bridge.submit(access(),plan);assert.equal((await runtime.local({op:'result',request_id:plan.request_id})).status,'proposed');
+    await runtime.bridge.submit(access(),plan);const proposedResult=await runtime.local({op:'result',request_id:plan.request_id});assert.ok('status' in proposedResult);assert.equal(proposedResult.status,'proposed');
     await assert.rejects(runtime.local({...input,telemetry:{cpu:1}}));await assert.rejects(runtime.local({op:'execute',command:'anything'}));
     await runtime.local({op:'cancel',request_id:plan.request_id});const cancelled=await runtime.local({op:'result',request_id:plan.request_id});assert.ok('proposal' in cancelled);assert.equal(cancelled.proposal,null);
     allowed=false;await assert.rejects(runtime.mcp({jsonrpc:'2.0',id:1,method:'tools/list'}));await runtime.pump();assert.equal(sent,1);

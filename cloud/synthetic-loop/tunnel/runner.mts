@@ -3,7 +3,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, writeFile, rename, rm, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir,userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseStrictJson } from '../bridge/json.mts';
 import { validateScope, verifyMetadata } from './identity.mts';
@@ -25,7 +25,7 @@ if (!key || key.length > 2048 || !key.startsWith('sk-') || /\s/.test(key)) throw
 const runDir = await mkdtemp(join(tmpdir(),'stats-tunnel-')); await chmod(runDir,0o700);
 const node = process.execPath, server = fileURLToPath(new URL('./stdio.mts',import.meta.url));
 if (![node,server].every(p => /^[a-zA-Z0-9/_.-]+$/.test(p))) throw new Error('Use an installation path without spaces or shell metacharacters.');
-const safeEnv = { PATH:process.env.PATH, HOME:runDir, XDG_CONFIG_HOME:runDir, NODE_ENV:'production', STATS_TUNNEL_RUN_DIR:runDir, STATS_CALLBACK_RESOLVER:callbackResolver };
+const safeEnv = { PATH:process.env.PATH, HOME:runDir, XDG_CONFIG_HOME:runDir, NODE_ENV:'production', STATS_TUNNEL_RUN_DIR:runDir, STATS_RUNTIME_USER_HOME:userInfo().homedir, STATS_CALLBACK_RESOLVER:callbackResolver };
 const secretEnv = {...safeEnv,CONTROL_PLANE_API_KEY:key};
 const exec = promisify(execFile);
 const runUntil = Date.now()+3_600_000;
