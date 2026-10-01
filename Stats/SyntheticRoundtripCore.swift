@@ -312,6 +312,7 @@ struct LocalRoundtripState: Codable {
     var installationScope = UUID().uuidString.lowercased()
     var phase: Phase = .empty
     var request: SyntheticClientRequest?
+    var runtimeInstanceID: String?
     var proposal: VerifiedSyntheticProposal?
     var activeReceipt: LocalTestReceipt?
     var receipts: [LocalTestReceipt] = []
@@ -319,9 +320,16 @@ struct LocalRoundtripState: Codable {
     mutating func create(at now: Date, id: String = UUID().uuidString.lowercased()) throws -> SyntheticClientRequest {
         guard phase != .executing else { throw RoundtripError.invalid("Finish or cancel the current local check first") }
         let next = try SyntheticClientRequest.create(at: now, id: id)
-        request = next; proposal = nil; activeReceipt = nil; phase = .waiting
+        request = next; runtimeInstanceID = nil; proposal = nil; activeReceipt = nil; phase = .waiting
         prune(at: now)
         return next
+    }
+    mutating func bindRuntime(_ instanceID: String) throws {
+        try RoundtripJSON.uuid(instanceID)
+        guard phase == .waiting, request != nil, runtimeInstanceID == nil || runtimeInstanceID == instanceID else {
+            throw RoundtripError.invalid("This request is already bound to another runtime; cancel before starting a new request")
+        }
+        runtimeInstanceID = instanceID
     }
     mutating func receive(_ data: Data, at now: Date) throws -> VerifiedSyntheticProposal {
         guard phase == .waiting, let request else {

@@ -3,11 +3,11 @@ import Foundation
 import Darwin
 
 enum SyntheticSocketError: Error, LocalizedError {
-    case unavailable, unsafeEndpoint, timeout, invalidResponse, cancelled
+    case unavailable, notListening, unsafeEndpoint, timeout, invalidResponse, cancelled
     var errorDescription: String? {
         switch self {
         case .cancelled: return "Local request cancelled. A request already sent to the runtime may still need remote cancellation."
-        case .unavailable: return "The temporary local runtime is unavailable. Keep its foreground Terminal open and choose its current private run folder."
+        case .unavailable, .notListening: return "The temporary local runtime is unavailable. Start the updated foreground runtime, keep its Terminal open, and retry automatic discovery."
         case .unsafeEndpoint: return "The runtime folder/socket must be owned by this user with permissions 0700/0600 and a same-user peer. No data was sent."
         case .timeout: return "The local runtime did not finish within 5 seconds. Submission may have reached it. Retry reuses the same request; Cancel blocks local actions."
         case .invalidResponse: return "The local runtime returned an invalid or oversized response. No local action is authorized."
@@ -23,6 +23,12 @@ final class SyntheticSocketCancellation {
         lock.lock(); let value = cancelled; lock.unlock()
         if value { throw SyntheticSocketError.cancelled }
     }
+}
+
+struct SyntheticSocketPeer {
+    let pid: pid_t
+    let device: dev_t
+    let inode: ino_t
 }
 
 struct SyntheticSocketTransport {
@@ -41,12 +47,19 @@ struct SyntheticSocketTransport {
         _ = try attributes(directory.path, type: S_IFDIR, permissions: 0o700)
         _ = try attributes(directory.appendingPathComponent("native.sock").path, type: S_IFSOCK, permissions: 0o600)
     }
-    func exchange(_ request: Data, cancellation: SyntheticSocketCancellation? = nil) throws -> Data {
+    func peerExpectation(pid: pid_t) throws -> SyntheticSocketPeer {
+        try validateEndpoint()
+        let info = try attributes(directory.appendingPathComponent("native.sock").path, type: S_IFSOCK, permissions: 0o600)
+        return SyntheticSocketPeer(pid: pid, device: info.st_dev, inode: info.st_ino)
+    }
+    func exchange(_ request: Data, cancellation: SyntheticSocketCancellation? = nil, peer: SyntheticSocketPeer? = nil,
+                  deadline suppliedDeadline: TimeInterval? = nil, beforeSend: (() throws -> Void)? = nil) throws -> Data {
         try cancellation?.check()
         guard !request.isEmpty, request.count < Self.maximumBytes, !request.contains(10) else { throw SyntheticSocketError.invalidResponse }
         try validateEndpoint()
         let path = directory.appendingPathComponent("native.sock").path
         let initial = try attributes(path, type: S_IFSOCK, permissions: 0o600)
+        if let peer { guard peer.device == initial.st_dev, peer.inode == initial.st_ino else { throw SyntheticSocketError.unsafeEndpoint } }
         var address = sockaddr_un()
         let bytes = Array(path.utf8)
         guard bytes.count < MemoryLayout.size(ofValue: address.sun_path), !bytes.contains(0) else { throw SyntheticSocketError.unsafeEndpoint }
@@ -56,26 +69,36 @@ struct SyntheticSocketTransport {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw SyntheticSocketError.unavailable }
         defer { Darwin.close(fd) }
-        guard fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { throw SyntheticSocketError.unavailable }
+        guard fcntl(fd, F_SETFL, O_NONBLOCK) == 0, fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else { throw SyntheticSocketError.unavailable }
         var enabled: Int32 = 1
         guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size)) == 0 else { throw SyntheticSocketError.unavailable }
-        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        let deadline = min(suppliedDeadline ?? .greatestFiniteMagnitude, ProcessInfo.processInfo.systemUptime + 5)
         try cancellation?.check()
         let connected = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
         if connected != 0 {
+            if errno == ECONNREFUSED || errno == ENOENT { throw SyntheticSocketError.notListening }
             guard errno == EINPROGRESS else { throw SyntheticSocketError.unavailable }
             try wait(fd, event: Int16(POLLOUT), until: deadline, cancellation: cancellation)
             var error: Int32 = 0, size = socklen_t(MemoryLayout<Int32>.size)
-            guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) == 0, error == 0 else { throw SyntheticSocketError.unavailable }
+            guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) == 0 else { throw SyntheticSocketError.unavailable }
+            if error == ECONNREFUSED || error == ENOENT { throw SyntheticSocketError.notListening }
+            guard error == 0 else { throw SyntheticSocketError.unavailable }
         }
         var peerUID: uid_t = 0, peerGID: gid_t = 0
         guard getpeereid(fd, &peerUID, &peerGID) == 0, peerUID == geteuid() else { throw SyntheticSocketError.unsafeEndpoint }
+        if let peer {
+            var pid: pid_t = 0, size = socklen_t(MemoryLayout<pid_t>.size)
+            guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &size) == 0, size == socklen_t(MemoryLayout<pid_t>.size), pid == peer.pid else {
+                throw SyntheticSocketError.unsafeEndpoint
+            }
+        }
         try validateEndpoint()
         let current = try attributes(path, type: S_IFSOCK, permissions: 0o600)
         guard initial.st_dev == current.st_dev, initial.st_ino == current.st_ino else { throw SyntheticSocketError.unsafeEndpoint }
         try cancellation?.check()
+        try beforeSend?()
         let payload = Array(request) + [10]
         var sent = 0
         while sent < payload.count {

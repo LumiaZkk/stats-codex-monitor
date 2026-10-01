@@ -10,11 +10,16 @@ struct SyntheticSocketResponse {
     let bundle: Data?
 }
 enum SyntheticSocketProtocol {
-    static func command(_ operation: SyntheticSocketOperation, request: SyntheticClientRequest, at now: Date) throws -> Data {
+    static func command(_ operation: SyntheticSocketOperation, request: SyntheticClientRequest, at now: Date, expectedInstanceID: String? = nil) throws -> Data {
         let client = try RoundtripJSON.object(request.json())
         // A terminal request may still be cancelled, but it can never be resubmitted after expiry.
         _ = try SyntheticClientRequest.parse(client, at: operation == .cancel ? RoundtripJSON.date(request.createdAt) : now)
-        return try JSONSerialization.data(withJSONObject: ["schema_version": 1, "op": operation.rawValue, "client_request": client], options: [.sortedKeys, .withoutEscapingSlashes])
+        var command: [String: Any] = ["schema_version": 1, "op": operation.rawValue, "client_request": client]
+        if let expectedInstanceID {
+            try RoundtripJSON.uuid(expectedInstanceID)
+            command["schema_version"] = 2; command["expected_instance_id"] = expectedInstanceID
+        }
+        return try JSONSerialization.data(withJSONObject: command, options: [.sortedKeys, .withoutEscapingSlashes])
     }
     static func response(_ data: Data, request: SyntheticClientRequest, at now: Date,
                          expected: SyntheticSocketBinding? = nil, allowExpired: Bool = false) throws -> SyntheticSocketResponse {

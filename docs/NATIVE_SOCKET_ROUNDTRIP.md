@@ -1,3 +1,5 @@
+> Version0.4.0 replaces the temporary-folder selection described below with [automatic verified runtime discovery](NATIVE_RUNTIME_DISCOVERY.md). The bounded result and local approval contract remains.
+
 # Native synthetic socket preview
 
 Version 0.3.0/build3 adds an explicit native menu action to the existing foreground
