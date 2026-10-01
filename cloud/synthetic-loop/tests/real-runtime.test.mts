@@ -47,6 +47,16 @@ test('real data and real stream are disabled in the default synthetic scope',asy
     await assert.rejects(s.runtime.events.subscribe(s.owner,{name:'diagnostic.requested',arguments:{stream_id:'global-device-v1'},delivery:{mode:'webhook',url:'https://fixture.invalid/events',secret:'whsec_'+Buffer.alloc(32,1).toString('base64')}}),/invalid_schema/);
   }finally{await s.close();}
 });
+test('real MCP catalog exposes object inputs and a visible stream filter without weakening branch validation',async()=>{
+  const s=setup();try{
+    const tools=await s.runtime.mcp({jsonrpc:'2.0',id:1,method:'tools/list'}),catalog=tools.result as {tools:Array<{name:string;inputSchema:{type:string;properties:Record<string,unknown>}}>};
+    for(const tool of catalog.tools)assert.equal(tool.inputSchema.type,'object');
+    const plan=catalog.tools.find(t=>t.name==='submit_diagnostic_plan')!;assert.ok(plan.inputSchema.properties.requires_local_approval);
+    const events=await s.runtime.mcp({jsonrpc:'2.0',id:2,method:'events/list'}),definitions=events.result as {events:Array<{inputSchema:{type:string;properties:Record<string,unknown>}}>};
+    for(const event of definitions.events){assert.equal(event.inputSchema.type,'object');assert.ok(event.inputSchema.properties.stream_id);}
+    assert.ok((await s.rpc('submit_diagnostic_plan',{schema_version:2,dry_run:false})).error);
+  }finally{await s.close();}
+});
 test('explicit real scope remains exclusively owned and changes the scope fingerprint',()=>{
   const now=Date.now(),scope={mode:'exclusive_personal_synthetic' as const,tunnel_id:'tunnel_'+'a'.repeat(32),organization_id:'org-test',workspace_id:randomUUID()};
   const real={...scope,mode:'exclusive_personal_global_diagnostics_v1' as const};validateScope(real);

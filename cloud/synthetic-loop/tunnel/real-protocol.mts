@@ -1,4 +1,4 @@
-import { EVENT_NAME,filterSchema,eventSchema,object,planSchema,requestArgsSchema,validate,Fault } from '../bridge/core.mts';
+import { EVENT_NAME,STREAM_ID,eventSchema,object,planSchema,requestArgsSchema,validate,Fault } from '../bridge/core.mts';
 import type { Schema } from '../bridge/core.mts';
 import { TOOLS } from '../bridge/mcp.mts';
 import type { McpExtension } from '../bridge/mcp.mts';
@@ -15,7 +15,7 @@ const realFilter=object({stream_id:{const:REAL_STREAM}});
 const requestPayload=object({request_id:uuid,request_hash:hash,stream_id:{const:REAL_STREAM},synthetic:{const:false},expires_at:instant});
 const receiptPayload=object({...requestPayload.properties,receipt_id:uuid,receipt_hash:hash});
 export const realEventSchemas:EventSchemas={
-  [EVENT_NAME]:{filter:{oneOf:[filterSchema,realFilter]},payload:{oneOf:[eventSchema,requestPayload]}},
+  [EVENT_NAME]:{filter:object({stream_id:{enum:[STREAM_ID,REAL_STREAM]}}),payload:{type:'object',oneOf:[eventSchema,requestPayload]}},
   [RECEIPT_EVENT]:{filter:realFilter,payload:receiptPayload},
 };
 const common={schema_version:{const:2},expected_instance_id:uuid,client_request:realRequestEnvelopeSchema};
@@ -36,8 +36,13 @@ export function realLocal(bridge:RealBridge,owner:string,value:unknown){
   return bridge.status(owner,command.client_request);
 }
 export function realExtension(bridge:RealBridge):McpExtension{
+  // MCP tool inputs are object schemas. Expose their fields to catalog readers
+  // while retaining complete branch validation for both protocol versions.
+  const unionProperties={...planSchema.properties,...realPlanSchema.properties,schema_version:{enum:[1,2]},dry_run:{enum:[true,false]},actions:{oneOf:[planSchema.properties!.actions,realPlanSchema.properties!.actions]}};
+  const commonRequired=planSchema.required!.filter(key=>realPlanSchema.required!.includes(key));
+  const proposalInput:Schema={...object(unionProperties,commonRequired),oneOf:[planSchema,realPlanSchema]};
   const tools=TOOLS.map(t=>{
-    if(t.name==='submit_diagnostic_plan')return{...t,description:'Store an immutable proposal for an owned request. Real plans may recommend one allowlisted local action, observation or no action. The server never executes; native local approval is mandatory.',inputSchema:{oneOf:[planSchema,realPlanSchema]}};
+    if(t.name==='submit_diagnostic_plan')return{...t,description:'Store an immutable proposal for an owned request. Real plans may recommend one allowlisted local action, observation or no action. The server never executes; native local approval is mandatory.',inputSchema:proposalInput};
     if(['get_diagnostic_request','get_diagnostic_result'].includes(t.name))return{...t,description:'Read one owned diagnostic request, immutable proposal and any returned local receipt. Real telemetry is bounded by explicit native consent. A receipt reports local observations and does not prove causation.'};
     if(t.name==='get_native_result_bundle')return{...t,description:'Read an owned immutable canonical result bundle. Hashes bind content; local approval and target-identity checks are still required before any action.'};
     return t;
