@@ -206,9 +206,11 @@ realReceipt.dispatchAttempted = true; realReceipt.dispatchOutcomeKnown = true
 real.testShowReceipt(realReceipt)
 check(visibleText().contains(zh ? "已退出" : "exited"), "Real result reports actual exit evidence")
 check(visibleText().contains(zh ? "不代表整体性能已改善" : "not a general performance improvement"), "Exit is distinct from performance improvement")
+check(!visibleText().contains("30/60"), "Completed receipt does not retain execution progress")
 try snapshot("real-completed")
 realReceipt.quitRequested = false; realReceipt.exitConfirmed = false; realReceipt.dispatchOutcomeKnown = false; realReceipt.outcome = "interrupted_by_restart"
 real.testShowReceipt(realReceipt)
 check(visibleText().contains(zh ? "实际结果未知" : "outcome is unknown"), "Interrupted dispatch remains explicitly unknown")
+check(!visibleText().contains("30/60"), "Interrupted receipt does not contradict unknown dispatch with running progress")
 try snapshot("real-interrupted")
 print("PASS: Real AppKit \(zh ? "zh-Hans" : "en") proposal, consumed-plan replay prevention, completion and interrupted-dispatch renders")

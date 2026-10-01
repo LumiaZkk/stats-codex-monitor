@@ -28,6 +28,7 @@ final class RealOptimizationController: NSObject {
     private var storageError = false
     private var storageFailureDetail = ""
     private var status = ""
+    private var receiptStatus = ""
     private var beforeWire: [String: Any]?
     private var displayManifest: String?
     private var requestConsumed = false
@@ -39,8 +40,8 @@ final class RealOptimizationController: NSObject {
         catch { storageError = true; storageFailureDetail = String(describing: error) }
     }
     private func text(_ en: String, _ zh: String) -> String { DiagnosticText.text(en, zh) }
-    private func show(_ title: String, _ intro: String, sections: [SyntheticSection] = [], buttons: [(String, Selector)] = [], loading: Bool = false, details: String = "", activate: Bool = true) {
-        ui.show(title: title, introduction: intro, sections: sections, progress: status,
+    private func show(_ title: String, _ intro: String, sections: [SyntheticSection] = [], buttons: [(String, Selector)] = [], loading: Bool = false, details: String = "", activate: Bool = true, progress: String? = nil) {
+        ui.show(title: title, introduction: intro, sections: sections, progress: progress ?? status,
                 buttons: buttons.map { SyntheticStatusWindow.Button(title: $0.0, action: $0.1, enabled: !busy || $0.1 == #selector(cancel), isApproval: $0.1 == #selector(approve)) }, target: self,
                 details: details, busy: loading, localEvidence: true, activate: activate, realOptimization: true)
     }
@@ -308,7 +309,7 @@ final class RealOptimizationController: NSObject {
         change(&receipts[index]); try storage.save(receipts)
     }
     private func finish(_ outcome: String, deliver: Bool = true, present: Bool = true) {
-        timer?.invalidate(); timer = nil; gate?.finish()
+        timer?.invalidate(); timer = nil; gate?.finish(); receiptStatus = ""
         guard let id = activeID, let index = receipts.firstIndex(where: { $0.id == id }), let request, let plan else { return }
         let now = Date(), after = capture()
         receipts[index].completedAt = RoundtripJSON.timestamp(now); receipts[index].outcome = outcome; receipts[index].after = after
@@ -332,14 +333,14 @@ final class RealOptimizationController: NSObject {
               let instance = receipt.runtimeInstanceID else { return }
         let token = generation
         if endpoint?.descriptor.instanceID != instance {
-            busy = true; status = text("Finding the original runtime for this saved receipt…", "正在查找这份已保存结果对应的原运行会话…"); showLast()
+            busy = true; receiptStatus = text("Finding the original runtime for this saved receipt…", "正在查找这份已保存结果对应的原运行会话…"); showLast()
             let cancellation = cancellation
             queue.async { [weak self] in
                 let result = Result { try SyntheticRuntimeDiscovery.find(cancellation: cancellation).filter { $0.descriptor.instanceID == instance } }
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.generation == token else { return }; self.busy = false
                     do { let matches = try result.get(); guard matches.count == 1 else { throw RuntimeDiscoveryError.originalRuntimeGone }; self.endpoint = matches[0]; self.returnReceipt() }
-                    catch { self.status = self.text("The original runtime is unavailable. This result remains local; it will not be sent to another session.", "原运行会话不可用。结果仍保存在本机，不会发送给其他会话。"); self.showLast() }
+                    catch { self.receiptStatus = self.text("The original runtime is unavailable. This result remains local; it will not be sent to another session.", "原运行会话不可用。结果仍保存在本机，不会发送给其他会话。"); self.showLast() }
                 }
             }
             return
@@ -368,7 +369,7 @@ final class RealOptimizationController: NSObject {
                       try RoundtripJSON.string(ack, "receipt_id") == receipt.id, try RoundtripJSON.string(ack, "receipt_hash") == hash else { throw RealOptimizationError.invalid }
             }
         } catch { fail(error); return }
-        busy = true; status = text("Local result saved. Returning the bounded receipt to dot…", "本地结果已保存，正在向 dot 回传有限结果…"); showLast()
+        busy = true; receiptStatus = text("Local result saved. Returning the bounded receipt to dot…", "本地结果已保存，正在向 dot 回传有限结果…"); showLast()
         queue.async { [weak self] in
             let result = Result { try job() }
             DispatchQueue.main.async { [weak self] in
@@ -377,8 +378,8 @@ final class RealOptimizationController: NSObject {
                     try result.get()
                     guard let index = self.receipts.firstIndex(where: { $0.id == receipt.id }) else { throw RealOptimizationError.invalid }
                     self.receipts[index].cloudReceiptConfirmed = true; try self.storage.save(self.receipts)
-                    self.status = self.text("The runtime confirmed the exact receipt hash. dot can now verify this result.", "运行端已确认同一份结果哈希，dot 现在可以核验。")
-                } catch { self.status = self.text("Result is saved locally; delivery to dot is unconfirmed. Retry returning the same result.", "结果已保存在本机；尚未确认送达 dot，可重试回传同一份结果。") }
+                    self.receiptStatus = self.text("The runtime confirmed the exact receipt hash. dot can now verify this result.", "运行端已确认同一份结果哈希，dot 现在可以核验。")
+                } catch { self.receiptStatus = self.text("Result is saved locally; delivery to dot is unconfirmed. Retry returning the same result.", "结果已保存在本机；尚未确认送达 dot，可重试回传同一份结果。") }
                 if self.ui.window?.isVisible == true { self.showLast() }
             }
         }
@@ -398,7 +399,7 @@ final class RealOptimizationController: NSObject {
         show(title, effect, sections: [SyntheticSection(title: text("Target and exact outcome", "目标与确切结果"), body: DiagnosticText.safeUntrusted(value.appName) + "\n" + (value.beforeUsage.map(usageText) ?? text("Observation only", "仅观测"))),
             SyntheticSection(title: text("Before · actual sample times", "操作前 · 实际采样时间"), body: hostText(value.before)),
             SyntheticSection(title: text("After · actual sample times", "操作后 · 实际采样时间"), body: hostText(value.after ?? .empty)),
-            SyntheticSection(title: text("How to interpret this", "怎样理解结果"), body: text("Only compare new timestamps. Unchanged timestamps mean the same cached sample, not a new measurement. A short-term change does not establish cause or lasting improvement. If the slowdown remains, run another global diagnosis; do not repeatedly close apps based on this old plan.", "只有不同采样时间才能作为新的观测。时间相同表示同一份缓存，并非新测量。短期变化不能证明因果关系或长期改善。若仍然卡顿，可重新全局诊断，不要根据旧建议反复关闭应用。"))], buttons: [(text("New diagnosis", "重新诊断"), #selector(collect)), (text("Retry receipt delivery", "重试回传结果"), #selector(returnReceipt))], loading: busy)
+            SyntheticSection(title: text("How to interpret this", "怎样理解结果"), body: text("Only compare new timestamps. Unchanged timestamps mean the same cached sample, not a new measurement. A short-term change does not establish cause or lasting improvement. If the slowdown remains, run another global diagnosis; do not repeatedly close apps based on this old plan.", "只有不同采样时间才能作为新的观测。时间相同表示同一份缓存，并非新测量。短期变化不能证明因果关系或长期改善。若仍然卡顿，可重新全局诊断，不要根据旧建议反复关闭应用。"))], buttons: [(text("New diagnosis", "重新诊断"), #selector(collect)), (text("Retry receipt delivery", "重试回传结果"), #selector(returnReceipt))], loading: busy, progress: receiptStatus.isEmpty ? (value.cloudReceiptConfirmed ? text("The runtime confirmed this exact result.", "运行端已确认同一份结果。") : text("Saved locally. Delivery to dot has not been confirmed.", "结果已保存在本机，尚未确认送达 dot。")) : receiptStatus)
     }
     private func showProgress(activate: Bool = true) { show(text("Diagnosis and optimization in progress", "诊断与优化进行中"), status, buttons: [(text("Cancel / stop observing", "取消／停止观测"), #selector(cancel))], loading: true, activate: activate) }
     private func fail(_ error: Error) {
@@ -407,7 +408,7 @@ final class RealOptimizationController: NSObject {
     }
     @objc private func cancel() {
         let oldRequest = request, oldEndpoint = endpoint, oldBinding = binding
-        timer?.invalidate(); timer = nil; cancellation.cancel(); cancellation = SyntheticSocketCancellation(); generation = UUID(); busy = false; gate?.cancel()
+        timer?.invalidate(); timer = nil; cancellation.cancel(); cancellation = SyntheticSocketCancellation(); generation = UUID(); busy = false; gate?.cancel(); receiptStatus = ""
         if activeID != nil { finish("cancelled") }
         else {
             resetPending(); status = text("Cancelled. No returned plan can start an action.", "已取消，返回的建议不能启动操作。"); open()
@@ -425,10 +426,10 @@ final class RealOptimizationController: NSObject {
     }
     private func resetPending() {
         generation = UUID(); cancellation.cancel(); cancellation = SyntheticSocketCancellation(); timer?.invalidate(); timer = nil
-        request = nil; endpoint = nil; binding = nil; plan = nil; candidate = nil; gate = nil; displayManifest = nil; beforeWire = nil; sample = nil; previewAt = nil; requestConsumed = false
+        request = nil; endpoint = nil; binding = nil; plan = nil; candidate = nil; gate = nil; displayManifest = nil; beforeWire = nil; sample = nil; previewAt = nil; requestConsumed = false; receiptStatus = ""
     }
     func interrupt(reason: String) {
-        timer?.invalidate(); timer = nil; cancellation.cancel(); cancellation = SyntheticSocketCancellation(); generation = UUID(); busy = false; gate?.cancel()
+        timer?.invalidate(); timer = nil; cancellation.cancel(); cancellation = SyntheticSocketCancellation(); generation = UUID(); busy = false; gate?.cancel(); receiptStatus = ""
         if activeID != nil {
             // Persist a terminal report, preserving any effect already accepted. No network during sleep/termination.
             finish("cancelled", deliver: false, present: false)
@@ -458,6 +459,6 @@ final class RealOptimizationController: NSObject {
         open(); approve()
         guard requestConsumed, receipts.count == count, activeID == nil else { throw RoundtripError.invalid("QA consumed state changed: consumed=\(requestConsumed), count=\(receipts.count)/\(count), active=\(activeID != nil)") }
     }
-    func testShowReceipt(_ receipt: RealLocalReceipt) { receipts = [receipt]; requestConsumed = true; busy = false; showLast() }
+    func testShowReceipt(_ receipt: RealLocalReceipt) { receipts = [receipt]; requestConsumed = true; busy = false; receiptStatus = ""; showLast() }
     #endif
 }
