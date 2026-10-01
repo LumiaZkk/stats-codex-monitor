@@ -13,31 +13,35 @@ import type { NativeSocketStatus } from '../tunnel/native-protocol.mts';
 import { mkdtemp,readFile,writeFile,rm,readdir,realpath } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join,resolve } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PANEL_URI,PANEL_HTML } from '../ui/panel-resource.mts';
-const binary=process.env.TUNNEL_CLIENT_BIN;if(!binary)throw new Error('Verified official binary required');
+import { prepareRuntimeBinary } from '../tunnel/runtime-binary.mts';
+import { prepareContainment } from './runtime-probe-containment.mts';
+import { createLoopbackControlPlane } from './official-runtime-fixture.mts';
+const binary=process.env.TUNNEL_CLIENT_BIN;if(!binary)throw new Error('Verified official runtime-only binary required');
 process.umask(0o077);const dir=await realpath(await mkdtemp(join(tmpdir(),'stats-private-probe-')));
 const now=Date.now(),lease={scope:{mode:'exclusive_personal_global_diagnostics_v1',tunnel_id:'tunnel_'+'a'.repeat(32),organization_id:'org-test',workspace_id:'11111111-1111-4111-8111-111111111111'},verified_at:now,valid_until:now+90_000,run_until:now+3_600_000};
 await writeFile(join(dir,'access.json'),JSON.stringify(lease),{mode:0o600});
-const server=fileURLToPath(new URL('../tunnel/stdio.mts',import.meta.url));
-const child=spawn(resolve(binary),['dev','proxy','--backend','go','--duration','45s','--mcp-command',`${process.execPath} ${server}`,'--url-file',join(dir,'proxy.json')],{env:{PATH:process.env.PATH,HOME:dir,XDG_CONFIG_HOME:dir,NODE_ENV:'test',STATS_TUNNEL_RUN_DIR:dir,STATS_RUNTIME_USER_HOME:dir},stdio:['ignore','ignore','pipe'],detached:process.platform!=='win32'});
-let diagnostic='',id=0;child.stderr.on('data',c=>{diagnostic=(diagnostic+c.toString()).slice(-8192);});
+const server=fileURLToPath(new URL('../tests/support/contained-runtime.mts',import.meta.url));
+const runtimeBinary=await prepareRuntimeBinary(binary,dir),controlPlane=await createLoopbackControlPlane(lease.scope.tunnel_id);
+const containment=await prepareContainment(dir,server,controlPlane.apiKey);
+const child=spawn(runtimeBinary,['run','--control-plane.tunnel-id',lease.scope.tunnel_id,'--control-plane.api-key','env:CONTROL_PLANE_API_KEY','--control-plane.base-url',controlPlane.url,'--mcp.command',containment.command,'--health.listen-addr','127.0.0.1:0'],{env:containment.env,stdio:['ignore','pipe','pipe'],detached:process.platform!=='win32'});
+let diagnostic='';for(const stream of [child.stdout,child.stderr])stream.on('data',c=>{diagnostic=(diagnostic+c.toString()).slice(-8192);});
 let spawnError:Error|undefined;child.on('error',e=>{spawnError=e;});
 const abort=new AbortController();const cancel=()=>abort.abort();process.once('SIGINT',cancel);process.once('SIGTERM',cancel);
 type Result={request:{request_id:string;expires_at:string;client_request?:NativeTransferRequest};request_hash:string;status:string;proposal_hash:string|null};
 try{
-  let info:{mcp_url:string}|undefined;const limit=Date.now()+20_000;
-  while(!info && Date.now()<limit){abort.signal.throwIfAborted();if(spawnError)throw spawnError;if(child.exitCode!==null)throw new Error(diagnostic);try{info=JSON.parse(await readFile(join(dir,'proxy.json'),'utf8'));}catch{await new Promise(r=>setTimeout(r,100));}}
-  if(!info)throw new Error('readiness_timeout');const endpoint=new URL(info.mcp_url);assert.equal(endpoint.hostname,'127.0.0.1');assert.equal(endpoint.protocol,'http:');
   async function call(method:string,params:Record<string,unknown>={}){
-    const r=await fetch(endpoint,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json',Accept:'application/json, text/event-stream'},body:JSON.stringify({jsonrpc:'2.0',id:++id,method,params:{...params,_meta:{'io.modelcontextprotocol/protocolVersion':'2026-07-28','io.modelcontextprotocol/clientCapabilities':{}}}}),signal:AbortSignal.any([abort.signal,AbortSignal.timeout(10_000)])});
-    assert.equal(r.status,200,`${method}: ${await r.clone().text()} ${diagnostic}`);return r.json() as Promise<{result?:{structuredContent:Result;events?:unknown[]};error?:{message:string}}>;
+    abort.signal.throwIfAborted();if(spawnError)throw spawnError;
+    if(child.exitCode!==null||child.signalCode!==null)throw new Error(`Official runtime stopped: ${diagnostic}`);
+    try { return await controlPlane.call<{structuredContent:Result;events?:unknown[]}>(method,params,abort.signal); }
+    catch(error) { throw new Error(`Isolated runtime call ${method} failed: ${(error as Error).message}; client exit=${child.exitCode}, signal=${child.signalCode}; ${diagnostic}`); }
   }
   async function local<T=Result>(p:unknown):Promise<T>{return new Promise((res,rej)=>{let data='';const s=connect(join(dir,'native.sock'));s.setEncoding('utf8');s.setTimeout(5000,()=>s.destroy(new Error('timeout')));s.once('connect',()=>s.write(JSON.stringify(p)+'\n'));s.on('data',c=>{data+=c;if(Buffer.byteLength(data)>16_384)s.destroy(new Error('too_large'));});s.once('error',rej);s.once('end',()=>{try{const v=JSON.parse(data);if(v.error)throw new Error(v.error);res(v.result);}catch(e){rej(e);}});});}
   assert.equal((await call('server/discover')).error,undefined);assert((await call('events/list')).result?.events?.length);
   // Exercise the complete (large, single-line) HTML resource through the actual
-  // official client, dev proxy and production stdio framing, not only direct rpc.
+  // runtime poll/response wire and production stdio framing, not only direct rpc.
   const resource=await call('resources/read',{uri:PANEL_URI}) as unknown as {error?:unknown;result:{resultType:string;ttlMs:number;cacheScope:string;contents:Array<{uri:string;mimeType:string;text:string}>}};
   assert.equal(resource.error,undefined);assert.equal(resource.result.resultType,'complete');assert.equal(resource.result.ttlMs,0);assert.equal(resource.result.cacheScope,'private');
   assert.equal(resource.result.contents.length,1);assert.equal(resource.result.contents[0].uri,PANEL_URI);assert.equal(resource.result.contents[0].mimeType,'text/html;profile=mcp-app');
@@ -90,11 +94,12 @@ try{
   const receiptText=canonical(receipt),receiptEnvelope={schema_version:1,kind:'stats_real_receipt_envelope',receipt_json:receiptText,receipt_hash:realStringHash(receiptText)};
   const receiptAck=await local<RealStatus>(realCommand('receipt_real',{receipt:receiptEnvelope}));assert.deepEqual(receiptAck.receipt,{receipt_id:receipt.receipt_id,receipt_hash:receiptEnvelope.receipt_hash});
   assert.equal((await local<RealStatus>(realCommand('cancel_real'))).status,'cancelled');
+  controlPlane.assertHealthy();await containment.assertPassed();
   await writeFile(join(dir,'access.json'),JSON.stringify({...lease,valid_until:Date.now()-1}),{mode:0o600});
   let rejected=false;try{rejected=Boolean((await call('tools/list')).error);}catch{rejected=true;}assert(rejected,'Expired access must reject calls or close the transport');
-  process.stdout.write(JSON.stringify({private_local_socket_roundtrip:'passed',native_envelope_socket_roundtrip:'passed',rendezvous_bound_protocol_v2:'passed',real_schema_fixture_roundtrip:'passed',receipt_return:'passed',official_mcp_transport:'passed',panel_resource_transport:'passed',invalid_callback_rejected:true,expired_access_rejected:true,hosted_tunnel:'not_tested',current_dot_wake:'not_tested',native_execution:'not_tested',real_telemetry_used:false})+'\n');
+  process.stdout.write(JSON.stringify({private_local_socket_roundtrip:'passed',native_envelope_socket_roundtrip:'passed',rendezvous_bound_protocol_v2:'passed',real_schema_fixture_roundtrip:'passed',receipt_return:'passed',official_mcp_transport:'passed',panel_resource_transport:'passed',runtime_only_containment:'passed',invalid_callback_rejected:true,expired_access_rejected:true,hosted_tunnel:'not_tested',current_dot_wake:'not_tested',native_execution:'not_tested',real_telemetry_used:false})+'\n');
 }finally{
   process.removeListener('SIGINT',cancel);process.removeListener('SIGTERM',cancel);
   const stop=(s:NodeJS.Signals)=>{try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,s);else child.kill(s);}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e;}};
-  const ended=new Promise(r=>child.once('exit',r));stop('SIGTERM');await Promise.race([ended,new Promise(r=>setTimeout(r,1000))]);if(child.exitCode===null&&child.signalCode===null){stop('SIGKILL');await Promise.race([ended,new Promise(r=>setTimeout(r,500))]);}await rm(dir,{recursive:true,force:true});
+  const ended=new Promise(r=>child.once('exit',r));stop('SIGTERM');await Promise.race([ended,new Promise(r=>setTimeout(r,1000))]);if(child.exitCode===null&&child.signalCode===null){stop('SIGKILL');await Promise.race([ended,new Promise(r=>setTimeout(r,500))]);}await controlPlane.close();await rm(dir,{recursive:true,force:true});
 }

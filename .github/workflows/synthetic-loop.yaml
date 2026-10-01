@@ -37,12 +37,13 @@ jobs:
           package-manager-cache: false
       - run: npm ci --ignore-scripts
       - run: npm run build:panel
-      - name: Download and verify official client for isolated local test
+      - name: Download and verify official runtime-only client for isolated local test
         run: |
-          curl --fail --location --max-time 90 https://github.com/openai/tunnel-client/releases/download/v0.0.15/tunnel-client-v0.0.15-linux-amd64.zip -o "$RUNNER_TEMP/tunnel-client.zip"
-          printf '%s  %s\n' 8c836dc5d68d68b663d9a5c5b28ff9fa780d9f7a3fffb1c306880b8f32fab5f1 "$RUNNER_TEMP/tunnel-client.zip" | sha256sum --check
-          unzip "$RUNNER_TEMP/tunnel-client.zip" tunnel-client -d "$RUNNER_TEMP/stats-official-client"
+          curl --fail --location --max-time 90 https://github.com/openai/tunnel-client/releases/download/v0.0.15/tunnel-client-runtime-v0.0.15-linux-amd64.zip -o "$RUNNER_TEMP/tunnel-client-runtime.zip"
+          printf '%s  %s\n' f26f8b3ee6c335e38fa5cfbe6ce5635f53738f08a26eecf07d6cebacab4a1abf "$RUNNER_TEMP/tunnel-client-runtime.zip" | sha256sum --check
+          unzip "$RUNNER_TEMP/tunnel-client-runtime.zip" tunnel-client-runtime -d "$RUNNER_TEMP/stats-official-client"
+          node tunnel/verify-client.mts "$RUNNER_TEMP/stats-official-client/tunnel-client-runtime"
       - name: Verify credential-free MCP 2.0 transport
-        run: TUNNEL_CLIENT_BIN="$RUNNER_TEMP/stats-official-client/tunnel-client" npm run test:official-tunnel
+        run: TUNNEL_CLIENT_BIN="$RUNNER_TEMP/stats-official-client/tunnel-client-runtime" npm run test:official-tunnel
       - name: Verify private socket synthetic and real-schema fixture transport
-        run: TUNNEL_CLIENT_BIN="$RUNNER_TEMP/stats-official-client/tunnel-client" npm run test:private-runtime
+        run: TUNNEL_CLIENT_BIN="$RUNNER_TEMP/stats-official-client/tunnel-client-runtime" npm run test:private-runtime

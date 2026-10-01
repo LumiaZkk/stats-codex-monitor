@@ -1,4 +1,4 @@
-// TEST ONLY: credential-free fixture for the official tunnel-client dev proxy.
+// TEST ONLY: credential-free MCP fixture for the official runtime-only wire probe.
 // Never configure a real tunnel against this file. It intentionally has no user auth.
 import { Bridge, Fault } from '../../bridge/core.mts';
 import { MemoryStore } from '../../bridge/memory-store.mts';

@@ -49,7 +49,7 @@ credential/subscription storage requires a separate explicit choice.
 - The account membership must be checked before setup; do not add members or
   delegate tunnel access during this test. Metadata rechecks verify association
   and continued runtime access, not every possible organization role assignment.
-- Node 24 and the official `tunnel-client` v0.0.15 binary, commit
+- Node 24 and the official **`tunnel-client-runtime`** v0.0.15 binary, commit
   `a390c168ff1b2d14e73a95991c186c6aba3ff5a0`, verified from the release checksum.
 - A user-owned **1-day** runtime key for the existing project, with **Restricted:
   Tunnels Read + Use only**. Every other API category stays None. No admin key.
@@ -66,25 +66,36 @@ Download the matching ZIP from
 
 | ZIP | SHA256 |
 |---|---|
-| tunnel-client-v0.0.15-darwin-arm64.zip | b2cae3aa9df45b4c2fe9b1d700ebacce39f9feb6a6b46b86e6499f9a51bf72ff |
-| tunnel-client-v0.0.15-darwin-amd64.zip | 9dcae1e2fb121287e73271edb7b853dda52aa86b7bfca1df91bc275371261bdb |
-| tunnel-client-v0.0.15-linux-amd64.zip | 8c836dc5d68d68b663d9a5c5b28ff9fa780d9f7a3fffb1c306880b8f32fab5f1 |
+| tunnel-client-runtime-v0.0.15-darwin-arm64.zip | e416ea9ea13e1b8be0d0a355fbd28143cfa55fe5a32b2986fce1a516d7b5e2ad |
+| tunnel-client-runtime-v0.0.15-darwin-amd64.zip | 2d3a2b3a985ad2fcfddc4a82a0caa6624ee9383e7d85e82563bf1fe3ce905794 |
+| tunnel-client-runtime-v0.0.15-linux-amd64.zip | f26f8b3ee6c335e38fa5cfbe6ce5635f53738f08a26eecf07d6cebacab4a1abf |
 
-Verify using `shasum -a 256`, then extract only `tunnel-client`. Nothing installs
+Verify using `shasum -a 256`, then extract only `tunnel-client-runtime`. Nothing installs
 a system service or changes firewall settings. Use paths without spaces for this
 small stdio launcher; it fails closed on shell metacharacters.
+
+The launcher hashes the extracted binary before asking for a key, then verifies
+and executes a private copy. Exact extracted-file hashes are pinned in
+`runtime-binary.mts`; filename and version alone are insufficient. Full-client
+and runtime-cloudflared builds are rejected. The full v0.0.15 client starts an
+unrelated Codex app-server through its admin UI lifecycle even with an explicit
+MCP command. That child inherits the parent's environment. The runtime-only
+build structurally excludes the admin UI/Codex packages. This source finding
+does not establish that any earlier run performed model inference or transmitted
+data externally. See the official [runtime boundary](https://github.com/openai/tunnel-client/blob/a390c168ff1b2d14e73a95991c186c6aba3ff5a0/docs/security/runtime-scan-boundary.md).
 
 ## Before entering any real key
 
 Run the credential-free local probes with the verified binary:
 
 ```sh
-TUNNEL_CLIENT_BIN=/absolute/path/to/tunnel-client npm run test:official-tunnel
-TUNNEL_CLIENT_BIN=/absolute/path/to/tunnel-client npm run test:private-runtime
+TUNNEL_CLIENT_BIN=/absolute/path/to/tunnel-client-runtime npm run test:official-tunnel
+TUNNEL_CLIENT_BIN=/absolute/path/to/tunnel-client-runtime npm run test:private-runtime
 ```
 
-The second probe uses the production server/SQLite/Unix socket behind the official local
-dev proxy, covering both synthetic and real-schema fake fixtures and receipt
+The second probe uses the production server/SQLite/Unix socket behind the official
+runtime-only client and a loopback poll/response control-plane fixture, covering
+both synthetic and real-schema fake fixtures and receipt
 return. Its access lease is an isolated fixture. It proves no hosted identity,
 external callback, current-dot wake or native execution. A container without Unix
 socket permission may fail EPERM; do not weaken the runtime's local IPC boundary.
@@ -105,24 +116,28 @@ The operator prepares a private JSON file, mode 0600, with these non-secret fiel
 Open a user-visible Terminal and run:
 
 ```sh
-/bin/bash /absolute/path/to/tunnel/launch.command /absolute/path/to/node /absolute/path/to/tunnel-client /absolute/path/to/approved-scope.json
+/bin/bash /absolute/path/to/tunnel/launch.command /absolute/path/to/node /absolute/path/to/tunnel-client-runtime /absolute/path/to/approved-scope.json
 ```
 
 The prompt uses Bash `read -s` from `/dev/tty`, with tracing disabled. Input is not
-a shell command and is never in command history or argv. The launcher exports it
-only to this test's runner/client processes and unsets it on exit. No API key file,
-saved profile, login item or launch agent is created. The official stdio child
-inherits the environment briefly and immediately removes API-key variables; the
-runtime server never uses them. Processes owned by the same OS account remain in
+a shell command and is never in command history or OS argv. A Bash builtin pipes
+one bounded line into a clean-environment Node runner. The key is kept in runner
+memory and supplied only to the verified official runtime process via its documented
+environment reference. The MCP command uses `/usr/bin/env -i` with a fixed allowlist,
+so the Node server starts without the key or ambient preload hooks. The env utility
+briefly inherits the runtime environment before clearing it. No API key file,
+saved profile, login item or launch agent is created. Processes owned by the same OS account remain in
 the local trust boundary.
 
-Startup checks the official client version and runs its authenticated read-only
-`admin --json tunnels get` command. Exact tunnel/org/workspace associations are
+Startup checks exact binary bytes and `flavor=runtime`, then calls the same fixed
+authenticated read-only `GET https://api.openai.com/v1/tunnels/{id}` endpoint used
+by the official admin client. Redirects, oversized/invalid JSON and unexpected
+responses fail closed. Exact tunnel/org/workspace associations are
 mandatory; unexpected tenant scopes fail closed. A successful check creates a
 90-second private access lease; it is refreshed every 30 seconds. Failed checks
 stop the runtime. RPCs and callback attempts reject expired leases.
 
-The official `doctor` check runs before the foreground client. The terminal prints
+The narrow binary has no admin, doctor or dev-proxy command. The terminal prints
 the private run directory, **not a ready claim**. Verify `/healthz` and `/readyz`
 using the loopback URL from that directory's `health.url` before connecting the
 private plugin. The tunnel connection uses official account/workspace access;
