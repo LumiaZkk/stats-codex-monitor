@@ -26,6 +26,7 @@ final class RealOptimizationController: NSObject {
     private var receipts: [RealLocalReceipt] = []
     private var activeID: String?
     private var storageError = false
+    private var storageFailureDetail = ""
     private var status = ""
     private var beforeWire: [String: Any]?
     private var displayManifest: String?
@@ -35,7 +36,7 @@ final class RealOptimizationController: NSObject {
         self.capture = capture; self.recent = recent; storage = RealReceiptStorage(directory: directory)
         super.init()
         do { receipts = try storage.load(at: Date()); try storage.save(receipts) }
-        catch { storageError = true }
+        catch { storageError = true; storageFailureDetail = String(describing: error) }
     }
     private func text(_ en: String, _ zh: String) -> String { DiagnosticText.text(en, zh) }
     private func show(_ title: String, _ intro: String, sections: [SyntheticSection] = [], buttons: [(String, Selector)] = [], loading: Bool = false, details: String = "", activate: Bool = true) {
@@ -311,7 +312,7 @@ final class RealOptimizationController: NSObject {
         do {
             let json = try RealJSON.encode(body); receipts[index].cloudReceiptJSON = json; receipts[index].cloudReceiptHash = RoundtripJSON.digest(json)
             try storage.save(receipts); activeID = nil; busy = false; if present { showLast() }; if deliver { returnReceipt() }
-        } catch { activeID = nil; busy = false; storageError = true; fail(RealOptimizationError.storage) }
+        } catch { activeID = nil; busy = false; storageError = true; storageFailureDetail = String(describing: error); fail(RealOptimizationError.storage) }
     }
     @objc private func noAction() { guard !busy, !requestConsumed, plan?.decision == "no_action" else { return }; do { try createReceipt(outcome: "no_action", approved: false); finish("no_action") } catch { fail(error) } }
     @objc private func decline() { guard !busy, !requestConsumed else { return }; do { try createReceipt(outcome: "declined", approved: false); finish("declined") } catch { fail(error) } }
@@ -425,7 +426,7 @@ final class RealOptimizationController: NSObject {
     }
     func maintain(at now: Date) {
         let pruned = RealReceiptStorage.pruned(receipts, at: now)
-        if pruned.count != receipts.count { receipts = pruned; do { try storage.save(receipts) } catch { storageError = true } }
+        if pruned.count != receipts.count { receipts = pruned; do { try storage.save(receipts) } catch { storageError = true; storageFailureDetail = String(describing: error) } }
     }
     func stop() { interrupt(reason: "app_termination") }
     #if DIAGNOSTICS_TESTS
@@ -435,11 +436,13 @@ final class RealOptimizationController: NSObject {
         showPlan(plan)
     }
     func testConsumeAndReopen(cancelled: Bool) throws {
+        guard !storageError else { throw RoundtripError.invalid("QA initialization storage failure: " + storageFailureDetail) }
         try createReceipt(outcome: "declined", approved: false)
         finish(cancelled ? "cancelled" : "declined")
+        guard !storageError else { throw RoundtripError.invalid("QA finalization storage failure: " + storageFailureDetail) }
         let count = receipts.count
         open(); approve()
-        guard requestConsumed, receipts.count == count, activeID == nil else { throw RealOptimizationError.invalid }
+        guard requestConsumed, receipts.count == count, activeID == nil else { throw RoundtripError.invalid("QA consumed state changed: consumed=\(requestConsumed), count=\(receipts.count)/\(count), active=\(activeID != nil)") }
     }
     func testShowReceipt(_ receipt: RealLocalReceipt) { receipts = [receipt]; requestConsumed = true; busy = false; showLast() }
     #endif
