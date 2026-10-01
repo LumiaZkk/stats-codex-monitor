@@ -15,6 +15,8 @@ import Kit
 public struct stats: Codable {
     var read: Int64 = 0
     var write: Int64 = 0
+    // nil while establishing a baseline or when the counters are unavailable.
+    var observedAt: Date? = nil
     
     var readBytes: Int64 = 0
     var writeBytes: Int64 = 0
@@ -53,6 +55,7 @@ public struct drive: Codable {
     
     var root: Bool = false
     var removable: Bool = false
+    var internalDevice: Bool? = nil
     
     var model: String = ""
     var path: URL?
@@ -171,6 +174,10 @@ public class Disks: Codable, RemoteType {
     func updateWrite(_ idx: Int, newValue: Int64) {
         self.array[idx].activity.write = newValue
     }
+
+    func updateActivityObservation(_ idx: Int, observedAt: Date?) {
+        self.array[idx].activity.observedAt = observedAt
+    }
     
     func updateSMARTData(_ idx: Int, smart: smart_t?) {
         self.array[idx].smart = smart
@@ -263,12 +270,12 @@ public class Disk: Module {
                 self?.capacityCallback(value)
             }
         }
-        if !DiagnosticsBridge.enabled {
         self.activityReader = ActivityReader(.disk) { [weak self] value in
             if let value {
                 self?.activityCallback(value)
             }
         }
+        if !DiagnosticsBridge.enabled {
         self.processReader = ProcessReader(.disk) { [weak self] value in
             if let list = value {
                 self?.popupView.processCallback(list)
@@ -391,6 +398,12 @@ public class Disk: Module {
         guard let d = value.first(where: { $0.mediaName == self.selectedDisk }) ?? value.first(where: { $0.root }) else {
             return
         }
+
+        if d.internalDevice == true, !d.removable, let observedAt = d.activity.observedAt {
+            DiagnosticsBridge.post("diskActivity", values: [
+                "read": Double(d.activity.read), "write": Double(d.activity.write)
+            ], date: observedAt)
+        }
         
         self.portalView.activityCallback(d)
         
@@ -400,9 +413,6 @@ public class Disk: Module {
                 widget.setValue(input: d.activity.read, output: d.activity.write)
             case let widget as NetworkChart:
                 widget.setValue(upload: Double(d.activity.write), download: Double(d.activity.read))
-                if self.capacityReader?.interval != 1 {
-                    self.settingsView.setUpdateInterval(value: 1)
-                }
             default: break
             }
         }

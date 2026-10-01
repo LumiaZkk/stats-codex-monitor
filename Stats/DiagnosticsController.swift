@@ -14,6 +14,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
     private var housekeeping: Timer?
     private var saveWork: DispatchWorkItem?
     private var roundtrip: SyntheticRoundtripController?
+    private var realOptimization: RealOptimizationController?
     private var window: NSWindow?
     private var textView: NSTextView?
     private var previewPrompt = ""
@@ -33,6 +34,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
         roundtrip = SyntheticRoundtripController(directory: directory) { [weak self] metrics in
             self?.captureLocalMetrics(metrics) ?? metrics.map { LocalMetricReading(metric: $0, value: nil, observedAt: nil, freshness: .unavailable) }
         }
+        realOptimization = RealOptimizationController(directory: directory, capture: { [weak self] in self?.captureRealHost() ?? .empty }, recent: { [weak self] in self?.recentRealSamples() ?? [] })
         item.button?.title = "SD ·"
         item.button?.toolTip = DiagnosticText.text("Stats Diagnostics: local CPU, memory and disk history", "Stats 诊断：本地 CPU、内存和磁盘历史记录")
         let menu = NSMenu()
@@ -73,6 +75,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
             let count = self.archive.samples.count + self.archive.events.count
             self.archive.prune(at: Date())
             self.roundtrip?.maintain(at: Date())
+            self.realOptimization?.maintain(at: Date())
             self.updateIndicator()
             if count != self.archive.samples.count + self.archive.events.count { self.save() }
         }
@@ -82,6 +85,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
 
     func stop() {
         roundtrip?.stop()
+        realOptimization?.stop()
         housekeeping?.invalidate()
         saveWork?.cancel()
         save()
@@ -92,6 +96,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
     }
     private func resetContinuity() {
         roundtrip?.interrupt(reason: "sleep_pause_or_collection_change")
+        realOptimization?.interrupt(reason: "sleep_pause_or_collection_change")
         archive.rules.resetContinuity()
         skipNextCPU = true
         latest.removeAll()
@@ -102,6 +107,12 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
         guard !sleeping, !Store.shared.bool(key: "pause", defaultValue: false),
               let info = note.userInfo, let kind = info["kind"] as? String,
               let values = info["values"] as? [String: Double], let date = info["date"] as? Date else { return }
+        if kind == "diskActivity" {
+            guard date <= Date(), Date().timeIntervalSince(date) <= 5, Store.shared.bool(key: "Disk_state", defaultValue: true),
+                  let read = values["read"], let write = values["write"], read.isFinite, write.isFinite, read >= 0, write >= 0 else { return }
+            latest[kind] = DiagnosticSample(date: date, kind: kind, values: ["read": read, "write": write], processes: [])
+            return // Ephemeral live I/O, never 1-second history writes.
+        }
         let allowed: [String: Set<String>] = ["cpu": ["usage"], "memory": ["used", "total", "swap", "pressure"],
                                             "disk": ["free", "total"], "cpuProcesses": [], "memoryProcesses": []]
         guard let keys = allowed[kind], date <= Date(), Date().timeIntervalSince(date) < 90 else { return }
@@ -203,6 +214,35 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
                                       freshness: Date().timeIntervalSince(source.date) <= limit ? .fresh : .stale)
         }
     }
+    @objc private func realDiagnose() { realOptimization?.open() }
+    private func captureRealHost() -> RealHostSnapshot {
+        guard !sleeping, !Store.shared.bool(key: "pause", defaultValue: false) else { return .empty }
+        let now = Date()
+        func sample(_ kind: String, _ module: String, _ age: TimeInterval) -> DiagnosticSample? {
+            guard Store.shared.bool(key: "\(module)_state", defaultValue: true), let value = latest[kind], (0...age).contains(now.timeIntervalSince(value.date)) else { return nil }
+            return value
+        }
+        func bytes(_ value: Double?) -> UInt64? { guard let value, value.isFinite, (0...9_007_199_254_740_991).contains(value) else { return nil }; return UInt64(value.rounded()) }
+        let cpu = sample("cpu", "CPU", 90), memory = sample("memory", "RAM", 90), disk = sample("disk", "Disk", 360), io = sample("diskActivity", "Disk", 5)
+        let pressure = memory?.values["pressure"].flatMap { value in value == 4 ? "critical" : value == 2 ? "warning" : value == 1 ? "normal" : nil }
+        return RealHostSnapshot(cpuBasisPoints: cpu?.values["usage"].map { Int(($0 * 10000).rounded()) }, cpuObservedAt: cpu.map { RoundtripJSON.timestamp($0.date) },
+            memoryPressure: pressure, swapBytes: bytes(memory?.values["swap"]), memoryObservedAt: memory.map { RoundtripJSON.timestamp($0.date) },
+            diskFreeBytes: bytes(disk?.values["free"]), diskObservedAt: disk.map { RoundtripJSON.timestamp($0.date) },
+            diskReadBytesPerSecond: bytes(io?.values["read"]), diskWriteBytesPerSecond: bytes(io?.values["write"]), ioObservedAt: io.map { RoundtripJSON.timestamp($0.date) })
+    }
+    private func recentRealSamples() -> [[String: Any]] {
+        guard !sleeping, !Store.shared.bool(key: "pause", defaultValue: false) else { return [] }
+        let now = Date()
+        var grouped: [String: [String: Any]] = [:]
+        for sample in archive.samples where ["cpu", "memory", "pressure"].contains(sample.kind) && (0...300).contains(now.timeIntervalSince(sample.date)) {
+            let stamp = RoundtripJSON.timestamp(sample.date)
+            var value = grouped[stamp] ?? ["observed_at": stamp, "host_cpu_basis_points": NSNull(), "memory_pressure": NSNull()]
+            if let cpu = sample.values["usage"], sample.kind == "cpu" { value["host_cpu_basis_points"] = Int((cpu * 10000).rounded()) }
+            if let p = sample.values["pressure"] { value["memory_pressure"] = p == 4 ? "critical" : p == 2 ? "warning" : "normal" }
+            grouped[stamp] = value
+        }
+        return grouped.keys.sorted().suffix(5).compactMap { grouped[$0] }
+    }
     private func summary() -> String {
         var parts: [String] = []
         if Store.shared.bool(key: "pause", defaultValue: false) { return DiagnosticText.text("Monitoring paused", "监测已暂停") }
@@ -228,7 +268,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
         if let error = storageError { menu.addItem(NSMenuItem(title: error, action: nil, keyEquivalent: "")) }
         menu.addItem(.separator())
         add(DiagnosticText.text("History (7 days)…", "历史记录（7 天）…"), #selector(showHistory), to: menu)
-        add(DiagnosticText.text("Diagnose…", "诊断…"), #selector(diagnose), to: menu)
+        add(DiagnosticText.text("Diagnose and optimize…", "全局诊断与优化…"), #selector(realDiagnose), to: menu)
         if roundtrip == nil {
             roundtrip = SyntheticRoundtripController(directory: directory) { [weak self] metrics in
                 self?.captureLocalMetrics(metrics) ?? metrics.map { LocalMetricReading(metric: $0, value: nil, observedAt: nil, freshness: .unavailable) }

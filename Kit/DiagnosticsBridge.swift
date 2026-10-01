@@ -7,17 +7,18 @@ public enum DiagnosticsBridge {
         Bundle.main.object(forInfoDictionaryKey: "StatsDiagnosticsFork") as? Bool == true
     }
     public static var dataFolder: String { enabled ? "StatsDiagnostics" : "Stats" }
-    public static func post(_ kind: String, values: [String: Double], processes: [TopProcess] = []) {
+    public static func post(_ kind: String, values: [String: Double], processes: [TopProcess] = [], date: Date = Date()) {
         guard enabled else { return }
         // Names are mapped to fixed categories by the consumer before persistence/export.
         let info: [String: Any] = ["kind": kind, "values": values,
-                                  "processes": Array(processes.prefix(5)), "date": Date()]
+                                  "processes": Array(processes.prefix(5)), "date": date]
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: notification, object: nil, userInfo: info)
         }
     }
     public static func interval(module: ModuleType, reader: String, requested: Int) -> Int {
         guard enabled else { return requested }
+        if module == .disk && reader == "ActivityReader" { return 1 }
         if reader == "ProcessReader" || module == .disk { return 300 }
         return 60
     }

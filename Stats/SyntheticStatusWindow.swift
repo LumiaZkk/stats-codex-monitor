@@ -60,14 +60,14 @@ final class SyntheticStatusWindow: NSObject {
     private var detailScroll: NSScrollView?
     private var detailsExpanded = false
     func show(title: String, introduction: String, sections: [SyntheticSection] = [], progress: String = "", buttons: [Button], target: AnyObject,
-              details: String = "", busy: Bool = false, localEvidence: Bool = false, activate: Bool = true) {
+              details: String = "", busy: Bool = false, localEvidence: Bool = false, activate: Bool = true, realOptimization: Bool = false) {
         let w: NSWindow
         if let existing = window { w = existing }
         else {
             w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 700), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
             w.isReleasedWhenClosed = false; w.minSize = NSSize(width: 660, height: 580); w.center(); window = w
         }
-        w.title = DiagnosticText.text("Stats Diagnostics · Guided demo", "Stats Diagnostics · 模拟体验")
+        w.title = realOptimization ? DiagnosticText.text("Stats Diagnostics · Diagnose and optimize", "Stats Diagnostics · 诊断与优化") : DiagnosticText.text("Stats Diagnostics · Guided demo", "Stats Diagnostics · 模拟体验")
         let container = NSView()
         let root = NSStackView(); root.orientation = .vertical; root.alignment = .leading; root.spacing = 12
         root.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(root)
@@ -77,7 +77,7 @@ final class SyntheticStatusWindow: NSObject {
             field.isSelectable = true; field.setContentCompressionResistancePriority(.required, for: .vertical)
             root.addArrangedSubview(field); field.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
         }
-        label(localEvidence ? DiagnosticText.text("LOCAL RESULTS · NO PERFORMANCE OPTIMIZATION", "本地结果 · 未执行性能优化") : DiagnosticText.text("GUIDED SIMULATION · NOT A DIAGNOSIS OF THIS MAC", "模拟体验 · 尚未诊断这台 Mac"), size: 11, weight: .semibold)
+        label(realOptimization ? DiagnosticText.text("THIS MAC · APPROVAL REQUIRED FOR EVERY ACTION", "这台 Mac 的实测数据 · 每次操作都需批准") : localEvidence ? DiagnosticText.text("LOCAL RESULTS · NO PERFORMANCE OPTIMIZATION", "本地结果 · 未执行性能优化") : DiagnosticText.text("GUIDED SIMULATION · NOT A DIAGNOSIS OF THIS MAC", "模拟体验 · 尚未诊断这台 Mac"), size: 11, weight: .semibold)
         let heading = NSStackView(); heading.orientation = .horizontal; heading.spacing = 10
         let titleLabel = NSTextField(wrappingLabelWithString: title); titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
         heading.addArrangedSubview(titleLabel)
@@ -87,7 +87,7 @@ final class SyntheticStatusWindow: NSObject {
         }
         root.addArrangedSubview(heading); heading.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
         if !progress.isEmpty { label(progress, size: 12, weight: .medium) }
-        if !localEvidence { label(DiagnosticText.text("Fixed example: CPU 92% · memory normal · free disk 80 GiB", "固定样例：CPU 92% · 内存正常 · 磁盘可用 80 GiB"), size: 12) }
+        if !localEvidence && !realOptimization { label(DiagnosticText.text("Fixed example: CPU 92% · memory normal · free disk 80 GiB", "固定样例：CPU 92% · 内存正常 · 磁盘可用 80 GiB"), size: 12) }
         let intro = SyntheticSection(title: DiagnosticText.text("What this means", "这意味着什么"), body: introduction)
         let scroll = SyntheticCardScroll(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         scroll.documentView = SyntheticCardDocument([intro] + sections)

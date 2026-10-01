@@ -1,3 +1,5 @@
+> 开发中的新增流程：全局实测数据预览 → dot 分析 → 明确批准 → 正常退出一个符合条件的应用或继续观测 → 前后结果回传。尚需本机验收，不能把短时指标变化当作优化成功。详见 [范围与验证说明](docs/REAL_DIAGNOSTICS.md)。
+
 > 0.4.0 / build 4 原生 socket 预览：在 SD → Synthetic diagnosis with dot 中，点击发送固定模拟诊断，应用会自动验证并连接正在运行的本地私有 Tunnel；只有找到多个有效实例时才需要选择。应用会自动取回建议，但执行本机有限测试前仍需单独批准。发送的 CPU 92%、正常内存、80 GiB 磁盘只是合成测试数据，不是本机实测值；实际前后测量和回执只保留本机。每次明确发送可能消耗 dot 模型额度。应用不读取或保存密钥、不启动 Tunnel。完整说明与验收限制见 [原生 socket 预览](docs/NATIVE_RUNTIME_DISCOVERY.md)。
 
 # stats-codex-monitor

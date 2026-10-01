@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D20000000000000000000010 /* DiskActivityRate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000010 /* DiskActivityRate.swift */; };
+		D2000000000000000000000F /* RealReceiptStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000000F /* RealReceiptStorage.swift */; };
+		D2000000000000000000000E /* RealOptimizationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000000E /* RealOptimizationController.swift */; };
+		D2000000000000000000000D /* RealOptimizationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000000D /* RealOptimizationCore.swift */; };
+		D2000000000000000000000C /* RealAppProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000000C /* RealAppProbe.swift */; };
 		D20000000000000000000008 /* SyntheticRuntimeDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */; };
 		D20000000000000000000009 /* DiagnosticText.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000009 /* DiagnosticText.swift */; };
 		D2000000000000000000000B /* SyntheticStatusWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000000B /* SyntheticStatusWindow.swift */; };
@@ -542,6 +547,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D10000000000000000000010 /* DiskActivityRate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Kit/DiskActivityRate.swift; sourceTree = SOURCE_ROOT; };
+		D1000000000000000000000F /* RealReceiptStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/RealReceiptStorage.swift; sourceTree = SOURCE_ROOT; };
+		D1000000000000000000000E /* RealOptimizationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/RealOptimizationController.swift; sourceTree = SOURCE_ROOT; };
+		D1000000000000000000000D /* RealOptimizationCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/RealOptimizationCore.swift; sourceTree = SOURCE_ROOT; };
+		D1000000000000000000000C /* RealAppProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/RealAppProbe.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticRuntimeDiscovery.swift; sourceTree = SOURCE_ROOT; };
 		D10000000000000000000009 /* DiagnosticText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/DiagnosticText.swift; sourceTree = SOURCE_ROOT; };
 		D1000000000000000000000B /* SyntheticStatusWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats/SyntheticStatusWindow.swift; sourceTree = SOURCE_ROOT; };
@@ -1107,6 +1117,10 @@
 				D10000000000000000000008 /* SyntheticRuntimeDiscovery.swift */,
 				D10000000000000000000009 /* DiagnosticText.swift */,
 				D1000000000000000000000B /* SyntheticStatusWindow.swift */,
+				D1000000000000000000000F /* RealReceiptStorage.swift */,
+				D1000000000000000000000E /* RealOptimizationController.swift */,
+				D1000000000000000000000D /* RealOptimizationCore.swift */,
+				D1000000000000000000000C /* RealAppProbe.swift */,
 				D1000000000000000000000A /* SyntheticExperience.swift */,
 				D10000000000000000000007 /* SyntheticSocketProtocol.swift */,
 				D10000000000000000000006 /* SyntheticSocketTransport.swift */,
@@ -1130,6 +1144,7 @@
 				9A28481B2666AB3500EC1F6D /* constants.swift */,
 				9A28481A2666AB3500EC1F6D /* extensions.swift */,
 				D10000000000000000000001 /* DiagnosticsBridge.swift */,
+				D10000000000000000000010 /* DiskActivityRate.swift */,
 				9A28481D2666AB3600EC1F6D /* helpers.swift */,
 				9A28481C2666AB3500EC1F6D /* types.swift */,
 				5C621D812B4770D6004ED7AF /* process.swift */,
@@ -2241,6 +2256,10 @@
 				D20000000000000000000008 /* SyntheticRuntimeDiscovery.swift in Sources */,
 				D20000000000000000000009 /* DiagnosticText.swift in Sources */,
 				D2000000000000000000000B /* SyntheticStatusWindow.swift in Sources */,
+				D2000000000000000000000F /* RealReceiptStorage.swift in Sources */,
+				D2000000000000000000000E /* RealOptimizationController.swift in Sources */,
+				D2000000000000000000000D /* RealOptimizationCore.swift in Sources */,
+				D2000000000000000000000C /* RealAppProbe.swift in Sources */,
 				D2000000000000000000000A /* SyntheticExperience.swift in Sources */,
 				D20000000000000000000007 /* SyntheticSocketProtocol.swift in Sources */,
 				D20000000000000000000006 /* SyntheticSocketTransport.swift in Sources */,
@@ -2276,6 +2295,7 @@
 				9A28480A2666AB3000EC1F6D /* SystemKit.swift in Sources */,
 				9A28477D2666AA5000EC1F6D /* widget.swift in Sources */,
 				D20000000000000000000001 /* DiagnosticsBridge.swift in Sources */,
+				D20000000000000000000010 /* DiskActivityRate.swift in Sources */,
 				9A2848212666AB3600EC1F6D /* helpers.swift in Sources */,
 				5CAA50722C8E417700B13E13 /* Text.swift in Sources */,
 				9A28477A2666AA5000EC1F6D /* window.swift in Sources */,

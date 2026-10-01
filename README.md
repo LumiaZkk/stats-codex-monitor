@@ -1,3 +1,5 @@
+> Development increment: [real global diagnosis and approved local optimization](docs/REAL_DIAGNOSTICS.md). This is not yet a notarized release; live acceptance is required.
+
 # stats-codex-monitor
 
 A local-first macOS performance companion, built as a small native extension of [Stats](https://github.com/exelban/stats).
