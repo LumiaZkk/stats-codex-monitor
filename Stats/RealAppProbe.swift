@@ -82,11 +82,19 @@ protocol RealAppProbing {
     func candidates() -> [RealAppIdentity]
     func identity(pid: Int32) throws -> RealAppIdentity
     func counter(for identity: RealAppIdentity) throws -> RealAppCounter
+    // Every throw must occur before dispatch. After calling the normal-quit API,
+    // return its Bool result without throwing; callers journal that boundary.
     func requestNormalQuit(_ identity: RealAppIdentity, notAfter: Date, protecting runtimePID: Int32) throws -> Bool
     func hasExited(_ identity: RealAppIdentity) -> Bool
 }
 
 final class RealAppProbe: RealAppProbing {
+    typealias AncestorReader = (Int32, inout proc_bsdshortinfo) -> Int32
+    private let readAncestor: AncestorReader
+    init(readAncestor: @escaping AncestorReader = { pid, info in
+        proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdshortinfo>.size))
+    }) { self.readAncestor = readAncestor }
+
     func candidates() -> [RealAppIdentity] {
         NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && !$0.isTerminated && $0.processIdentifier != getpid() }
             .prefix(64).compactMap { try? identity(pid: $0.processIdentifier) }
@@ -139,9 +147,13 @@ final class RealAppProbe: RealAppProbing {
             if current == target { return true }
             if current <= 1 { return false }
             guard seen.insert(current).inserted else { throw RealOptimizationError.changed }
-            var info = proc_bsdinfo()
-            guard proc_pidinfo(current, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == Int32(MemoryLayout<proc_bsdinfo>.size), info.pbi_pid == UInt32(current) else { throw RealOptimizationError.changed }
-            current = Int32(info.pbi_ppid)
+            // A terminal's chain can cross a root-owned login process. The
+            // short BSD API exposes ancestry without the full-info same-UID
+            // restriction. Follow every parent; never skip a cross-UID node.
+            var info = proc_bsdshortinfo()
+            guard readAncestor(current, &info) == Int32(MemoryLayout<proc_bsdshortinfo>.size),
+                  info.pbsi_pid == UInt32(current), info.pbsi_ppid <= UInt32(Int32.max) else { throw RealOptimizationError.changed }
+            current = Int32(info.pbsi_ppid)
         }
         throw RealOptimizationError.changed
     }

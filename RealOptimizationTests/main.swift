@@ -169,7 +169,85 @@ let recovered = try store.load(at: now.addingTimeInterval(3))
 check(recovered.count == 1 && recovered[0].outcome == "interrupted_by_restart", "Restart never resumes a saved approval")
 check(recovered[0].dispatchAttempted && !recovered[0].dispatchOutcomeKnown, "Unknown dispatch survives restart honestly")
 check(RealReceiptStorage.pruned(recovered, at: now.addingTimeInterval(7 * 86400 + 1)).isEmpty, "Real receipts expire after7days")
+var historical = durable
+historical.completedAt = RoundtripJSON.timestamp(now)
+historical.outcome = "precondition_failed"
+historical.cloudReceiptJSON = "{\"historical\":true}"
+historical.cloudReceiptHash = RoundtripJSON.digest(historical.cloudReceiptJSON!)
+historical.cloudReceiptConfirmed = true
+func newDispatchReceipt() -> RealLocalReceipt {
+    RealLocalReceipt(id: UUID().uuidString.lowercased(), requestID: request.id, clientRequestHash: request.hash, planID: plan.id, planHash: plan.hash, manifest: manifest, targetFingerprint: identity.fingerprint, appName: "Fixture", startedAt: RoundtripJSON.timestamp(now), outcome: "approved", quitRequested: false, exitConfirmed: false, before: before, beforeUsage: usage)
+}
+for response in ["throw", "false", "true"] {
+    var local = newDispatchReceipt(), sends = 0, writes = 0
+    let accepted = try RealQuitDispatch.perform(send: {
+        sends += 1
+        let pending = try store.load(at: now.addingTimeInterval(1)).last!
+        check(pending.dispatchAttempted && !pending.dispatchOutcomeKnown, "Durable uncertainty exists before the only send closure")
+        if response == "throw" { throw RealOptimizationError.changed }
+        return response == "true"
+    }, update: { change in
+        change(&local); writes += 1; try store.save([historical, local])
+    })
+    let saved = try store.load(at: now.addingTimeInterval(2))
+    check(sends == 1 && writes == 2 && accepted == (response == "true"), "Dispatch makes one attempt and journals its exact return or precondition rejection")
+    check(saved.last!.dispatchOutcomeKnown && saved.last!.dispatchAttempted == (response != "throw") && saved.last!.quitRequested == (response == "true"), "Known pre-dispatch rejection differs from API refusal and acceptance")
+    check(saved.first!.dispatchAttempted && !saved.first!.dispatchOutcomeKnown && saved.first!.cloudReceiptJSON == historical.cloudReceiptJSON && saved.first!.cloudReceiptHash == historical.cloudReceiptHash && saved.first!.cloudReceiptConfirmed, "New dispatch never rewrites a historical completed receipt or its cloud bytes")
+}
+for failedWrite in [1, 2] {
+    var local = newDispatchReceipt(), sends = 0, writes = 0
+    try store.save([local])
+    rejects("Journal failure propagates instead of becoming a precondition rejection") {
+        _ = try RealQuitDispatch.perform(send: { sends += 1; return true }, update: { change in
+            writes += 1
+            if writes == failedWrite { throw RealOptimizationError.storage }
+            change(&local); try store.save([local])
+        })
+    }
+    let saved = try store.load(at: now.addingTimeInterval(2)).last!
+    check(sends == (failedWrite == 1 ? 0 : 1), "Failed pending write prevents dispatch; post-dispatch failure never retries")
+    check(!saved.dispatchOutcomeKnown && saved.dispatchAttempted == (failedWrite == 2), "Post-dispatch persistence failure leaves durable unknown state")
+}
+var rejectedWriteReceipt = newDispatchReceipt(), rejectionWrites = 0, rejectedSendCalls = 0
+rejects("Failure to persist a known pre-dispatch rejection propagates") {
+    _ = try RealQuitDispatch.perform(send: { rejectedSendCalls += 1; throw RealOptimizationError.changed }, update: { change in
+        rejectionWrites += 1
+        if rejectionWrites == 2 { throw RealOptimizationError.storage }
+        change(&rejectedWriteReceipt); try store.save([rejectedWriteReceipt])
+    })
+}
+let rejectionPending = try store.load(at: now.addingTimeInterval(2)).last!
+check(rejectedSendCalls == 1 && rejectionPending.dispatchAttempted && !rejectionPending.dispatchOutcomeKnown, "Unsaved rejection preserves prior durable uncertainty without a retry")
 try FileManager.default.removeItem(at: storeURL)
+
+// The actual ancestry traversal runs against injected kernel responses, including
+// the cross-UID parent shape observed in the real Terminal/runtime chain.
+let shortSize = Int32(MemoryLayout<proc_bsdshortinfo>.size)
+var ancestorReads: [Int32] = []
+let crossingProbe = RealAppProbe(readAncestor: { pid, info in
+    ancestorReads.append(pid); info.pbsi_pid = UInt32(pid)
+    info.pbsi_ppid = [100: 200, 200: 300, 300: 1][pid]!
+    info.pbsi_uid = pid == 200 ? 0 : 501; info.pbsi_ruid = 501
+    return shortSize
+})
+let unrelated = try crossingProbe.isAncestor(900, of: 100)
+check(!unrelated && ancestorReads == [100, 200, 300], "Cross-UID ancestor chain is read completely to the root")
+let aboveRootOwnedParent = try crossingProbe.isAncestor(300, of: 100)
+check(aboveRootOwnedParent, "A target above a root-owned ancestor remains protected")
+for readLength in [Int32(0), shortSize - 1, shortSize + 1] {
+    let incomplete = RealAppProbe(readAncestor: { pid, info in info.pbsi_pid = UInt32(pid); info.pbsi_ppid = 1; return readLength })
+    rejects("Every failed or inexact ancestor read fails closed") { _ = try incomplete.isAncestor(900, of: 100) }
+}
+let wrongPID = RealAppProbe(readAncestor: { pid, info in info.pbsi_pid = UInt32(pid + 1); info.pbsi_ppid = 1; return shortSize })
+rejects("Ancestor response PID mismatch") { _ = try wrongPID.isAncestor(900, of: 100) }
+let invalidParent = RealAppProbe(readAncestor: { pid, info in info.pbsi_pid = UInt32(pid); info.pbsi_ppid = UInt32.max; return shortSize })
+rejects("Ancestor parent must fit a process identifier") { _ = try invalidParent.isAncestor(900, of: 100) }
+let cyclic = RealAppProbe(readAncestor: { pid, info in info.pbsi_pid = UInt32(pid); info.pbsi_ppid = pid == 100 ? 200 : 100; return shortSize })
+rejects("Ancestry cycle fails closed") { _ = try cyclic.isAncestor(900, of: 100) }
+var boundedReads = 0
+let unbounded = RealAppProbe(readAncestor: { pid, info in boundedReads += 1; info.pbsi_pid = UInt32(pid); info.pbsi_ppid = UInt32(pid + 1); return shortSize })
+rejects("Ancestry depth exhaustion fails closed") { _ = try unbounded.isAncestor(900, of: 100) }
+check(boundedReads == 64, "Ancestry kernel reads remain bounded to64")
 // Read-only Darwin integration: two actual kernel counter reads, no target app or quit call.
 let nativeProbe = RealAppProbe()
 let protectsRuntime = try nativeProbe.isAncestor(getpid(), of: getpid())

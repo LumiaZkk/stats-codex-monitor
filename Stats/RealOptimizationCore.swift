@@ -300,6 +300,23 @@ struct RealLocalReceipt: Codable {
     var cloudReceiptConfirmed = false
 }
 
+enum RealQuitDispatch {
+    // The send closure follows RealAppProbing's contract: throws only before
+    // the normal-quit API. Persistence failures must never be reclassified as
+    // pre-dispatch rejection or permit another attempt.
+    static func perform(send: () throws -> Bool, update: ((inout RealLocalReceipt) -> Void) throws -> Void) throws -> Bool {
+        try update { $0.dispatchAttempted = true; $0.dispatchOutcomeKnown = false; $0.outcome = "quit_dispatch_pending" }
+        let accepted: Bool
+        do { accepted = try send() }
+        catch {
+            try update { $0.dispatchAttempted = false; $0.dispatchOutcomeKnown = true; $0.quitRequested = false; $0.outcome = "precondition_failed" }
+            return false
+        }
+        try update { $0.dispatchOutcomeKnown = true; $0.quitRequested = accepted; $0.outcome = accepted ? "quit_requested" : "quit_dispatch_refused" }
+        return accepted
+    }
+}
+
 struct RealExecutionGate {
     enum Phase { case reviewing, approved, quitRequested, observing, finished, cancelled }
     private(set) var phase = Phase.reviewing

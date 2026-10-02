@@ -420,14 +420,12 @@ final class RealOptimizationController: NSObject {
         try createReceipt(outcome: "approved", approved: true)
         if plan.recommendsQuit {
             guard let candidate = self.candidate, let endpoint else { throw RealOptimizationError.invalid }
+            let validUntil = try RoundtripJSON.date(candidate.usage.observedAt).addingTimeInterval(5)
             try self.gate?.takeQuitPermission()
             // Commit authorization + attempted request before the only side-effect API.
-            try updateReceipt { $0.dispatchAttempted = true; $0.dispatchOutcomeKnown = false; $0.outcome = "quit_dispatch_pending" }
-            let validUntil = try RoundtripJSON.date(candidate.usage.observedAt).addingTimeInterval(5)
-            let accepted: Bool
-            do { accepted = try probe.requestNormalQuit(candidate.identity, notAfter: validUntil, protecting: endpoint.descriptor.pid) }
-            catch { finish("precondition_failed"); return }
-            try updateReceipt { $0.dispatchOutcomeKnown = true; $0.quitRequested = accepted; $0.outcome = accepted ? "quit_requested" : "quit_dispatch_refused" }
+            let accepted = try RealQuitDispatch.perform(send: {
+                try probe.requestNormalQuit(candidate.identity, notAfter: validUntil, protecting: endpoint.descriptor.pid)
+            }, update: updateReceipt)
             if !accepted { finish("precondition_failed"); return }
             status = text("Normal quit requested. If the app asks to save, handle it there. Waiting up to15seconds…", "已请求正常退出。若应用提示保存，请在该应用中处理。最多等待 15 秒…")
             showProgress(); waitForQuit(candidate)
