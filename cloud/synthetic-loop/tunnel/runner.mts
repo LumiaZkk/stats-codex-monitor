@@ -70,6 +70,7 @@ try {
   interval=setInterval(()=>{ if(checking || stopped)return; checking=true; void verify().catch(()=>{process.stderr.write('Tunnel access changed or expired; stopping safely.\n');cancel();}).finally(()=>{checking=false;});},30_000);
   deadline=setTimeout(cancel,Math.max(0,runUntil-Date.now()));
   process.stdout.write(`Stats diagnostic tunnel launched (readiness not yet verified; data scope: ${scope.mode}). Private run directory: ${runDir}\n`);
+  process.stdout.write(`Foreground session run_until: ${new Date(runUntil).toISOString()}\n`);
   process.stdout.write('Keep this terminal open. Ctrl-C stops the test and removes temporary credentials/subscriptions.\n');
   await exited;
 } catch { process.stderr.write(`Tunnel test stopped at ${stage}. Verify the narrow runtime scope and local readiness. No key was logged.\n`); process.exitCode=1; }

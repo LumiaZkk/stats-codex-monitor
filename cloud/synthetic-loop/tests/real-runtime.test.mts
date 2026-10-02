@@ -28,7 +28,8 @@ function setup(enabled=true){
   const body=shift(JSON.parse(fixture.client_request_json),now-base) as RealDiagnosticBody;body.client_request_id=randomUUID();const client=envelope(body);
   const command=(op:string,more:Record<string,unknown>={})=>{const common={schema_version:2,op,expected_instance_id:identity.instance_id};if(op==='receipt_real'){const id=runtime.real.clientId(owner,client),hash=id?runtime.real.read(owner,id).request_hash:'0'.repeat(64);return{...common,client_request_id:body.client_request_id,client_request_hash:client.client_request_hash,request_id:id??'00000000-0000-4000-8000-000000000000',request_hash:hash,...more};}return{...common,client_request:client,...more};};
   const rpc=(name:string,args:unknown)=>runtime.mcp({jsonrpc:'2.0',id:randomUUID(),method:'tools/call',params:{name,arguments:args}});
-  return{store,runtime,owner,identity,body,client,command,rpc,sent,get now(){return now;},advance:(ms:number)=>{now+=ms;},revoke:()=>{allowed=false;},close:async()=>{await new Promise(r=>setImmediate(r));store.close();rmSync(dir,{recursive:true,force:true});}};
+  const subscribePair=async()=>{for(const name of ['diagnostic.requested','diagnostic.receipt_ready'])await runtime.events.subscribe(owner,{name,arguments:{stream_id:'global-device-v1'},delivery:{mode:'webhook',url:'https://fixture.invalid/events',secret:'whsec_'+Buffer.alloc(32,1).toString('base64')}});};
+  return{store,runtime,owner,identity,body,client,command,rpc,sent,subscribePair,get now(){return now;},advance:(ms:number)=>{now+=ms;},revoke:()=>{allowed=false;},close:async()=>{await new Promise(r=>setImmediate(r));store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 function planFor(s:ReturnType<typeof setup>,id:string,decision:RealPlan['decision']='recommend_quit'):RealPlan{const request=s.runtime.real.read(s.owner,id);return{schema_version:2,request_id:id,request_hash:request.request_hash,plan_id:randomUUID(),expires_at:request.request.expires_at,dry_run:false,requires_local_approval:true,policy_id:'local_capabilities_v1',decision,summary:'Fixture only; review exact local target before any action.',actions:decision==='recommend_quit'?[{type:'quit_app',candidate_id:s.body.candidates[0].candidate_id}]:decision==='observe'?[{type:'observe_metrics'}]:[]};}
 function receiptFor(s:ReturnType<typeof setup>,plan:RealPlan){
@@ -96,6 +97,7 @@ test('bound native request, signed event, MCP plan, receipt return and receipt e
 });
 test('cancellation before uncertain submission blocks the identical late request and mismatched bindings',async()=>{
   const s=setup();try{
+    await s.subscribePair();
     await assert.rejects(s.runtime.local(s.command('cancel_real')),/not_found/);
     await assert.rejects(s.runtime.local(s.command('diagnose_real')),/request_cancelled/);
     const changed=structuredClone(s.body);changed.snapshot.disk_free_bytes=1;const client=envelope(changed);
@@ -105,6 +107,7 @@ test('cancellation before uncertain submission blocks the identical late request
 });
 test('no action and observation plans are valid; executable extras, arbitrary targets and replacements are rejected',async()=>{
   for(const decision of ['observe','no_action'] as const){const s=setup();try{
+    await s.subscribePair();
     const created=await s.runtime.local(s.command('diagnose_real'));assert.ok('request_id' in created);const plan=planFor(s,created.request_id,decision);
     assert.ok(!(await s.rpc('submit_diagnostic_plan',plan)).error);
     assert.ok((await s.rpc('submit_diagnostic_plan',{...plan,summary:'replacement'})).error);
@@ -115,7 +118,7 @@ test('no action and observation plans are valid; executable extras, arbitrary ta
 });
 test('real event delivery records survive ordinary subscription pruning and process recreation',async()=>{
   const s=setup();try{
-    await s.runtime.events.subscribe(s.owner,{name:'diagnostic.requested',arguments:{stream_id:'global-device-v1'},delivery:{mode:'webhook',url:'https://fixture.invalid/events',secret:'whsec_'+Buffer.alloc(32,1).toString('base64')}});
+    await s.subscribePair();
     await s.runtime.local(s.command('diagnose_real'));await s.runtime.pump();assert.equal(s.sent.length,1);s.store.prune();await s.runtime.pump();assert.equal(s.sent.length,1);
     assert.equal(s.store.db.prepare('SELECT count(*) AS n FROM deliveries WHERE received=1').get()!.n,1);
   }finally{await s.close();}
@@ -154,12 +157,14 @@ function wideBody(body:RealDiagnosticBody,name:string){
 }
 test('request admission budgets nested JSON escaping before creating an unreturnable request',async()=>{
   const s=setup();try{wideBody(s.body,'\\'.repeat(64));const client=envelope(s.body);
+    await s.subscribePair();
     await assert.rejects(s.runtime.local(s.command('diagnose_real',{client_request:client})),/request_result_too_large/);
     assert.equal(s.store.db.prepare('SELECT count(*) AS n FROM real_diagnostic_requests').get()!.n,0);
   }finally{await s.close();}
 });
 test('compact receipt references keep wide Unicode requests uploadable and reject every mismatched binding',async()=>{
   const s=setup();try{wideBody(s.body,'🧪'.repeat(64));const client=envelope(s.body);
+    await s.subscribePair();
     const created=await s.runtime.local(s.command('diagnose_real',{client_request:client}));assert.ok('request_id' in created);const plan=planFor(s,created.request_id);s.runtime.real.submit(s.owner,plan);
     const receipt=receiptFor(s,plan);s.advance(60_000);
     const command={schema_version:2,op:'receipt_real',expected_instance_id:s.identity.instance_id,client_request_id:s.body.client_request_id,client_request_hash:client.client_request_hash,request_id:created.request_id,request_hash:created.request_hash,receipt};

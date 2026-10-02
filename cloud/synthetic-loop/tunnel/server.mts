@@ -23,12 +23,15 @@ import { consumeStdio } from './stdio-input.mts';
 import { LocalRequestFrame, NATIVE_OPS, nativeLocal, localResultFrame, boundNativeSocketCommandSchema, nativeHelloSchema } from './native-protocol.mts';
 import { RealBridge } from './real-store.mts';
 import { REAL_OPS,realEventSchemas,realExtension,realLocal,realSocketCommandSchema,assertRealEnabled } from './real-protocol.mts';
+import { GlobalCollection,COLLECTION_OPS,collectionSocketSchema,globalCollectionExtension } from './global-collection.mts';
+import type { RealRequestEnvelope } from '../bridge/real-contract.mts';
 
 export class SyntheticRuntime {
-  store: RuntimeStore; bridge: Bridge; real:RealBridge; events: Events; access: () => string; busy = false; resolver: CallbackResolver; identity?: RuntimeIdentity; readonly realEnabled:boolean;
+  store: RuntimeStore; bridge: Bridge; real:RealBridge; collection:GlobalCollection; events: Events; access: () => string; busy = false; resolver: CallbackResolver; identity?: RuntimeIdentity; readonly realEnabled:boolean;
   constructor(store: RuntimeStore, access: () => string, post: SafePost = pinnedHttpsPost, resolver: CallbackResolver = 'system', identity?: RuntimeIdentity,realEnabled=false) {
     this.resolver=resolver;this.identity=identity ? Object.freeze({...identity}) : undefined;
     this.store = store; this.access = access; this.bridge = new Bridge(store.requests);this.real=new RealBridge(store.db,()=>this.bridge.clock());this.realEnabled=realEnabled;
+    this.collection=new GlobalCollection(store,this.real,this.identity?.instance_id);
     this.events = new Events(store.subscriptions, post, async owner => { try { return access() === owner; } catch { return false; } },Date.now,realEnabled?realEventSchemas:undefined);
   }
   async create(input: unknown) { const result = await this.bridge.create(this.access(), input); void this.pump(); return result; }
@@ -47,6 +50,7 @@ export class SyntheticRuntime {
         }
       }
       if(this.realEnabled)for(const id of this.real.pending(owner))for(const event of this.real.events(owner,id))for(const sub of this.store.active(owner)){
+        if(sub.id!==this.collection.destination(owner,id,event.name))continue;
         if(sub.name!==event.name||sub.arguments.stream_id!==event.data.stream_id||!this.store.begin(event.eventId,sub.id))continue;
         try{await this.events.deliver(owner,sub.id,event,async()=>this.access()===owner&&this.real.events(owner,id).some(e=>e.eventId===event.eventId));this.store.acknowledge(event.eventId,sub.id);}
         catch(e){if(e instanceof Fault&&['callback_rejected','callback_gone','subscription_not_found','subscription_inactive','request_terminal','event_filter_mismatch'].includes(e.reason))this.store.reject(event.eventId,sub.id);}
@@ -57,9 +61,10 @@ export class SyntheticRuntime {
   async mcp(value: unknown) {
     const owner = this.access();
     const input = value as { method?: string; params?: { name?: string; arguments?: unknown } };
-    const base=this.realEnabled?realExtension(this.real):{tools:TOOLS};
+    const base=globalCollectionExtension(this.collection,this.realEnabled,expected=>this.boundIdentity(expected),this.realEnabled?realExtension(this.real):{tools:TOOLS});
     const extension=panelExtension({bridge:this.bridge,identity:()=>{if(!this.identity)throw new Fault('runtime_identity_unavailable');return this.boundIdentity(this.identity.instance_id);},boundIdentity:expected=>this.boundIdentity(expected),
       subscriptionReady:()=>this.store.active(this.access()).filter(isSyntheticSubscription).length===1,
+      globalReadiness:()=>({real_enabled:this.realEnabled,real_subscription_ready:this.realEnabled&&this.collection.ready(this.access()),native_collection_available:this.realEnabled&&this.collection.nativeReady(this.access())}),
       reserveDestination:(requestOwner,key)=>{const activeOwner=this.access();if(activeOwner!==requestOwner)throw new Fault('runtime_scope_changed');const subs=this.store.active(activeOwner).filter(isSyntheticSubscription);if(subs.length!==1)throw new Fault('synthetic_subscription_unavailable',409);this.store.reservePanelDestination(activeOwner,key,subs[0].id,this.bridge.clock()+30*60_000);return()=>this.store.releaseUncreatedPanelDestination(activeOwner,key);}},base);
     const result = await rpc(this.bridge,owner,value,this.events,extension);
     if ('result' in result && result.result && typeof result.result === 'object') {
@@ -85,8 +90,18 @@ export class SyntheticRuntime {
       validate(nativeHelloSchema,value);const identity=this.boundIdentity(p.expected_instance_id);
       return {schema_version:2 as const,kind:'stats_runtime_hello' as const,...identity,nonce:p.nonce!};
     }
+    if(COLLECTION_OPS.includes(p?.op as typeof COLLECTION_OPS[number])){
+      assertRealEnabled(this.realEnabled);validate(collectionSocketSchema,value);this.boundIdentity(p.expected_instance_id);
+      const result=this.collection.local(this.access(),value);
+      if(p.op==='diagnose_real_for_intent')setImmediate(()=>void this.pump());
+      return result;
+    }
     if(REAL_OPS.includes(p?.op as typeof REAL_OPS[number])){
       assertRealEnabled(this.realEnabled);validate(realSocketCommandSchema,value);this.boundIdentity(p.expected_instance_id);
+      if(p.op==='diagnose_real'){
+        this.collection.createDirect(this.access(),p.client_request as RealRequestEnvelope);
+        setImmediate(()=>void this.pump());return this.real.status(this.access(),p.client_request as RealRequestEnvelope);
+      }
       const result=realLocal(this.real,this.access(),value);
       if(p.op==='diagnose_real'||p.op==='receipt_real')setImmediate(()=>void this.pump());
       return result;
@@ -112,7 +127,7 @@ export class SyntheticRuntime {
   }
 }
 
-export async function serve(dir: string) {
+export async function serve(dir: string, testCallbackPost?: SafePost) {
   process.umask(0o077); privateFile(dir,true);
   // API key stays with the official client/runner. This server never uses it.
   delete process.env.CONTROL_PLANE_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.OPENAI_ADMIN_KEY;
@@ -121,7 +136,7 @@ export async function serve(dir: string) {
   const access = () => {if(callbackLifetime.signal.aborted)throw new Fault('runtime_stopped');const lease=readLease(),owner=leasePrincipal(lease);if(owner!==initialPrincipal||lease.run_until!==initialLease.run_until)throw new Fault('runtime_scope_changed');return owner;};
   const uid=process.geteuid?.();if(uid===undefined||uid!==process.getuid?.())throw new Fault('unsupported_runtime_identity');
   const identity:RuntimeIdentity={instance_id:randomUUID(),protocol_version:2,uid,runtime_pid:process.pid,started_at:new Date().toISOString(),expires_at:new Date(initialLease.run_until).toISOString(),scope_hash:digest(initialLease.scope)};
-  const transport=callbackTransport(process.env.STATS_CALLBACK_RESOLVER,callbackLifetime.signal); const store = new RuntimeStore(join(dir,'state.sqlite')); const runtime = new SyntheticRuntime(store,access,transport.post,transport.mode,identity,initialLease.scope.mode==='exclusive_personal_global_diagnostics_v1');
+  const transport=callbackTransport(process.env.STATS_CALLBACK_RESOLVER,callbackLifetime.signal); const store = new RuntimeStore(join(dir,'state.sqlite')); const runtime = new SyntheticRuntime(store,access,testCallbackPost??transport.post,transport.mode,identity,initialLease.scope.mode==='exclusive_personal_global_diagnostics_v1');
   const socketPath = join(dir,'native.sock');
   if(existsSync(socketPath)) {
     const s=lstatSync(socketPath);if(!s.isSocket() || (s.mode & 0o077)!==0 || (process.getuid && s.uid!==process.getuid()))throw new Fault('unsafe_socket_path');

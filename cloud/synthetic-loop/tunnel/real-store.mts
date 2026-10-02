@@ -37,7 +37,7 @@ export class RealBridge {
     if(canonical((JSON.parse(row.request_json as string) as RealDiagnosticRequest).client_request)!==canonical(client))throw new Fault('real_binding_mismatch',409);
     return row.request_id as string;
   }
-  create(owner:string,client:RealRequestEnvelope){
+  create(owner:string,client:RealRequestEnvelope,onCreated?:(requestId:string)=>void){
     principal(owner);const body=validateRealRequest(client,this.clock(),{allowExpired:true});
     this.db.exec('BEGIN IMMEDIATE');
     try{
@@ -55,6 +55,7 @@ export class RealBridge {
       const reserve:RealPlan={schema_version:2,request_id:row.request_id,request_hash:row.request_hash,plan_id:'00000000-0000-4000-8000-000000000000',expires_at:row.expires_at,dry_run:false,requires_local_approval:true,policy_id:'local_capabilities_v1',decision:'recommend_quit',summary:'\\'.repeat(256),actions:[{type:'quit_app',candidate_id:'00000000-0000-4000-8000-000000000000'}]};
       this.ensureResultBudget(row,reserve,'request_result_too_large');
       this.db.prepare('INSERT INTO real_diagnostic_requests(request_id,owner,client_id,request_json,request_hash,event_id,expires_at) VALUES(?,?,?,?,?,?,?)').run(row.request_id,owner,row.client_id,row.request_json,row.request_hash,row.event_id,row.expires_at);
+      onCreated?.(row.request_id);
       this.db.exec('COMMIT');return this.read(owner,request.request_id);
     }catch(error){try{this.db.exec('ROLLBACK');}catch{}throw error;}
   }
