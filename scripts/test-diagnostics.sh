@@ -4,7 +4,9 @@ cd "$(dirname "$0")/.."
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/stats-diagnostics-tests.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 swiftc Stats/SyntheticExperience.swift Stats/DiagnosticText.swift Stats/DiagnosticsCore.swift Stats/SyntheticRoundtripCore.swift Stats/SyntheticSocketProtocol.swift Stats/SyntheticSocketTransport.swift Stats/SyntheticRuntimeDiscovery.swift DiagnosticsTests/main.swift -o "$build_dir/rules-test"
-"$build_dir/rules-test"
+# Presentation assertions below intentionally use English; AppKit is tested in
+# both English and Chinese later, independently of the Mac's preferred language.
+"$build_dir/rules-test" -AppleLanguages '(en)'
 
 python3 DiagnosticsTests/socket_fixture.py "$build_dir/rules-test"
 

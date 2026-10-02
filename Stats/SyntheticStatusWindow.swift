@@ -55,7 +55,7 @@ private final class SyntheticCardScroll: NSScrollView {
     }
 }
 
-final class SyntheticStatusWindow: NSObject {
+final class SyntheticStatusWindow: NSObject, NSWindowDelegate {
     struct Button {
         let title: String
         let action: Selector
@@ -63,6 +63,7 @@ final class SyntheticStatusWindow: NSObject {
         var isApproval = false
     }
     private(set) var window: NSWindow?
+    var onClose: (() -> Void)?
     private var detailScroll: NSScrollView?
     private var detailsExpanded = false
     func show(title: String, introduction: String, sections: [SyntheticSection] = [], progress: String = "", buttons: [Button], target: AnyObject,
@@ -71,7 +72,7 @@ final class SyntheticStatusWindow: NSObject {
         if let existing = window { w = existing }
         else {
             w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 700), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-            w.isReleasedWhenClosed = false; w.minSize = NSSize(width: 660, height: 580); w.center(); window = w
+            w.isReleasedWhenClosed = false; w.minSize = NSSize(width: 660, height: 580); w.center(); w.delegate = self; window = w
         }
         w.title = realOptimization ? DiagnosticText.text("Stats Diagnostics · Diagnose and optimize", "Stats Diagnostics · 诊断与优化") : DiagnosticText.text("Stats Diagnostics · Guided demo", "Stats Diagnostics · 模拟体验")
         let container = NSView()
@@ -126,6 +127,7 @@ final class SyntheticStatusWindow: NSObject {
         w.contentView = container; w.contentView?.layoutSubtreeIfNeeded(); scroll.tile()
         if activate { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) } else { w.displayIfNeeded() }
     }
+    func windowWillClose(_ notification: Notification) { onClose?() }
     @objc private func toggleDetails(_ sender: NSButton) { detailsExpanded = sender.state == .on; detailScroll?.isHidden = !detailsExpanded }
     static func approval(for proposal: VerifiedSyntheticProposal) -> NSAlert {
         let alert = NSAlert()

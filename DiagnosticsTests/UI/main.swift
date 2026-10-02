@@ -22,6 +22,7 @@ func pump(_ seconds: TimeInterval = 0.05) { RunLoop.main.run(until: Date().addin
 func waitUntil(_ condition: () -> Bool, _ name: String) {
     let deadline = ProcessInfo.processInfo.systemUptime + 5
     while !condition(), ProcessInfo.processInfo.systemUptime < deadline { pump(0.02) }
+    if !condition() { print("UI state on timeout: " + visibleText()); fflush(stdout) }
     check(condition(), name)
 }
 func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
@@ -44,10 +45,11 @@ func snapshot(_ name: String) throws {
     // AppKit so artifact viewers do not accidentally render black text on black.
     guard let canvas = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: bitmap.pixelsWide, pixelsHigh: bitmap.pixelsHigh, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: canvas) else { fatalError("Canvas unavailable") }
     context.cgContext.setFillColor(CGColor(gray: 1, alpha: 1))
-    context.cgContext.fill(view.bounds)
+    let pixelBounds = CGRect(x: 0, y: 0, width: canvas.pixelsWide, height: canvas.pixelsHigh)
+    context.cgContext.fill(pixelBounds)
     context.cgContext.setBlendMode(.normal)
     guard let rendered = bitmap.cgImage else { fatalError("Rendered image unavailable") }
-    context.cgContext.draw(rendered, in: view.bounds)
+    context.cgContext.draw(rendered, in: pixelBounds)
     context.flushGraphics()
     check(canvas.colorAt(x: 0, y: 0)?.alphaComponent == 1, "Artifact has an opaque inspection background")
     guard let png = canvas.representation(using: .png, properties: [:]) else { fatalError("PNG render unavailable") }
@@ -158,6 +160,67 @@ print("PASS: AppKit \(zh ? "zh-Hans" : "en") status, click, cancel, proposal, ap
 // Real flow is rendered with unmistakable fake fixtures. These hooks are absent
 // from the shipped app, and no socket or termination API is invoked here.
 let realDirectory = directory.appendingPathComponent("real", isDirectory: true)
+// The production consent and retry state machine is exercised with inert socket
+// and process-reader boundaries. No runtime, process list, or real upload is used.
+var collectionReads = 0, collectionHostReads = 0
+let inbox = RealOptimizationController(directory: directory.appendingPathComponent("inbox"), capture: { collectionHostReads += 1; return .empty }, recent: { [] })
+inbox.testProcessTable = {
+    collectionReads += 1
+    return RealProcessTable(counters: [:], uids: [:], starts: [:], reportedCount: 0, unreadable: 0, truncated: false)
+}
+let intentNow = Date()
+let intentObject: [String: Any] = ["schema_version": 1, "kind": "stats_global_collection_intent", "intent_id": UUID().uuidString.lowercased(),
+    "created_at": RoundtripJSON.timestamp(intentNow.addingTimeInterval(-1)), "expires_at": RoundtripJSON.timestamp(intentNow.addingTimeInterval(599)), "consent_scope": "global_diagnostics_v1"]
+let intentReply = Data(try RealJSON.encode(["result": ["schema_version": 1, "kind": "stats_global_collection_poll", "intent": intentObject, "intent_hash": RoundtripJSON.digest(RealJSON.encode(intentObject))]]).utf8)
+let inboxIntent = try RealCollectionIntent.parsePoll(intentReply, at: intentNow)!
+inbox.testOfferCollection(inboxIntent)
+check(collectionReads == 0 && collectionHostReads == 0, "Receiving intent cannot capture process or host data")
+check(visibleText().contains(zh ? "允许这一次全局诊断" : "Allow one global diagnosis"), "Global collection has a distinct native consent screen")
+check(button(zh ? "采集并预览" : "Collect and preview").keyEquivalent.isEmpty, "Collection consent has no default Enter shortcut")
+try snapshot("collection-consent")
+let confirmationGate = DispatchSemaphore(value: 0), confirmationLock = NSLock()
+var confirmationStarted = false
+inbox.testSocketExchange = { _ in
+    confirmationLock.lock(); confirmationStarted = true; confirmationLock.unlock()
+    _ = confirmationGate.wait(timeout: .now() + 2)
+    return intentReply
+}
+inbox.perform(NSSelectorFromString("confirmCollection"))
+waitUntil({ confirmationLock.lock(); defer { confirmationLock.unlock() }; return confirmationStarted }, "Consent rechecks exact active intent before any capture")
+window().close()
+confirmationGate.signal(); pump(0.2)
+check(!inbox.testPendingCollection, "Closing consent resolves local denial immediately")
+check(collectionReads == 0 && collectionHostReads == 0, "Late confirmation after close cannot enter either collector")
+inbox.testOfferCollection(inboxIntent)
+inbox.testExpireCollection(at: intentNow.addingTimeInterval(601))
+check(!inbox.testPendingCollection && collectionReads == 0 && collectionHostReads == 0, "Expired unsubmitted consent clears without collection and cannot block the next intent")
+inbox.testOfferCollection(inboxIntent)
+inbox.testSeedCollectionPreview(RealGlobalSample(candidates: [], consumers: [], coverage: ["reported_process_count": 0]))
+let uploadLock = NSLock()
+var uploads: [Data] = []
+inbox.testSocketExchange = { data in
+    uploadLock.lock(); uploads.append(data); let count = uploads.count; uploadLock.unlock()
+    if count == 1 { throw SyntheticSocketError.timeout }
+    let command = try RoundtripJSON.object(data), envelope = try RealJSON.object(command, "client_request")
+    let body = try RoundtripJSON.object(RoundtripJSON.string(envelope, "client_request_json"))
+    return Data(try RealJSON.encode(["result": ["schema_version": 1, "kind": "stats_real_socket_status",
+        "client_request_id": body["client_request_id"]!, "client_request_hash": envelope["client_request_hash"]!,
+        "request_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "request_hash": String(repeating: "b", count: 64),
+        "status": "requested", "bundle": NSNull(), "receipt": NSNull()]]).utf8)
+}
+inbox.perform(NSSelectorFromString("send"))
+waitUntil({ descendants(window().contentView!).compactMap { $0 as? NSButton }.contains { $0.title == (zh ? "重试同一次请求" : "Retry same request") } }, "Lost upload response exposes immutable retry")
+let pendingUpload = inbox.testPendingRequest
+check(inbox.testRetryOperation(at: intentNow.addingTimeInterval(601)) == "result_real", "Expired uncertain upload can only query its existing immutable result")
+inbox.perform(NSSelectorFromString("collect"))
+check(inbox.testPendingRequest == pendingUpload && pendingUpload != nil, "Refresh cannot replace an uncertain upload")
+inbox.perform(NSSelectorFromString("retrySubmission"))
+waitUntil({ uploadLock.lock(); defer { uploadLock.unlock() }; return uploads.count == 2 }, "Retry reaches the same upload boundary")
+uploadLock.lock(); let sameUpload = uploads.count == 2 && uploads[0] == uploads[1]; uploadLock.unlock()
+check(sameUpload, "Response lost then retry sends byte-identical original consent and snapshot")
+check(collectionReads == 0 && collectionHostReads == 0, "Retry never recaptures or alters the approved preview")
+inbox.perform(NSSelectorFromString("cancel")); window().close(); inbox.stop()
+print("PASS: Collection consent, close-during-confirmation cancellation, and immutable lost-response retry")
 let real = RealOptimizationController(directory: realDirectory, capture: { .empty }, recent: { [] })
 real.open()
 check(visibleText().contains(zh ? "分析这台 Mac" : "Diagnose this Mac"), "Real flow is primary and not synthetic")

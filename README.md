@@ -8,7 +8,7 @@ CPU, memory, swap and startup-disk monitoring stay on your Mac. Open **SD → Di
 
 **Status: experimental source preview, version 0.4.0/build4.** This branch removes temporary-folder selection: explicit synthetic diagnosis automatically discovers the live foreground runtime, retrieves its result, and preserves separately approved bounded local tests. GitHub CI covers Swift assertions and unsigned compilation; check the exact commit run. Native UI/consent/interruption validation is still required. This is not a notarized release.
 
-[Automatic runtime discovery](docs/NATIVE_RUNTIME_DISCOVERY.md) · [Native socket preview](docs/NATIVE_SOCKET_ROUNDTRIP.md) · [Manual test protocol](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
+[One-shot global collection](docs/NATIVE_GLOBAL_COLLECTION.md) · [Automatic runtime discovery](docs/NATIVE_RUNTIME_DISCOVERY.md) · [Native socket preview](docs/NATIVE_SOCKET_ROUNDTRIP.md) · [Manual test protocol](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
 
 ## What this adds
 

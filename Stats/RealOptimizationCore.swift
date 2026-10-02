@@ -98,7 +98,7 @@ struct RealDiagnosticRequest: Equatable {
     let hash: String
     let candidateIDs: [String]
     var envelope: [String: Any] { ["schema_version": 1, "kind": "stats_real_request", "client_request_json": json, "client_request_hash": hash] }
-    static func create(sample: RealGlobalSample, snapshot: RealHostSnapshot, recent: [[String: Any]], consentAt: Date, at now: Date) throws -> Self {
+    static func create(sample: RealGlobalSample, snapshot: RealHostSnapshot, recent: [[String: Any]], consentAt: Date, at now: Date, intent: RealCollectionIntent? = nil) throws -> Self {
         guard sample.candidates.allSatisfy({ candidate in
             guard let observed = try? RoundtripJSON.date(candidate.usage.observedAt) else { return false }
             return (0...30).contains(now.timeIntervalSince(observed))
@@ -106,11 +106,73 @@ struct RealDiagnosticRequest: Equatable {
             guard let stamp = row["observed_at"] as? String, let observed = try? RoundtripJSON.date(stamp) else { return false }
             return (0...30).contains(now.timeIntervalSince(observed))
         }), consentAt <= now, now.timeIntervalSince(consentAt) < 600 else { throw RealOptimizationError.noConsent }
-        let id = UUID().uuidString.lowercased(), created = RoundtripJSON.timestamp(now), expires = RoundtripJSON.timestamp(now.addingTimeInterval(600))
+        if let intent { try intent.validate(at: now); guard consentAt >= (try RoundtripJSON.date(intent.createdAt)) else { throw RealOptimizationError.noConsent } }
+        let id = intent?.id ?? UUID().uuidString.lowercased(), created = RoundtripJSON.timestamp(now)
+        let expires = RoundtripJSON.timestamp(min(now.addingTimeInterval(600), try intent.map { try RoundtripJSON.date($0.expiresAt) } ?? now.addingTimeInterval(600)))
         let body: [String: Any] = ["schema_version": 1, "kind": "stats_real_diagnostic", "client_request_id": id, "created_at": created, "expires_at": expires,
                                    "consent": ["scope": "global_diagnostics_v1", "confirmed_at": RoundtripJSON.timestamp(consentAt)], "snapshot": snapshot.json, "candidates": sample.candidates.map { $0.wire() }, "consumers": sample.consumers, "coverage": sample.coverage, "recent_samples": recent, "capabilities": ["quit_app", "observe_metrics"]]
         let json = try RealJSON.encode(body)
         return Self(id: id, createdAt: created, expiresAt: expires, json: json, hash: RoundtripJSON.digest(json), candidateIDs: sample.candidates.map(\.id))
+    }
+}
+
+// The request inbox carries only a one-shot intent. It never carries host readings,
+// process names, commands, targets, or approval for collection or execution.
+struct RealCollectionIntent: Equatable {
+    let id: String
+    let createdAt: String
+    let expiresAt: String
+    let hash: String
+    func validate(at now: Date) throws {
+        try RoundtripJSON.uuid(id); try RoundtripJSON.hash(hash)
+        let start = try RoundtripJSON.date(createdAt), end = try RoundtripJSON.date(expiresAt)
+        guard start <= now.addingTimeInterval(RoundtripJSON.clockSkew), end > now, end > start,
+              end.timeIntervalSince(start) <= 600 else { throw RealOptimizationError.expired }
+    }
+    static func parsePoll(_ bytes: Data, at now: Date) throws -> Self? {
+        guard bytes.count <= 4096 else { throw RealOptimizationError.invalid }
+        let wrapper = try RoundtripJSON.object(bytes); try RoundtripJSON.keys(wrapper, ["result"])
+        let value = try RealJSON.object(wrapper, "result")
+        try RoundtripJSON.keys(value, ["schema_version", "kind", "intent", "intent_hash"])
+        guard try RoundtripJSON.number(value, "schema_version") == 1,
+              try RoundtripJSON.string(value, "kind") == "stats_global_collection_poll" else { throw RealOptimizationError.invalid }
+        if value["intent"] is NSNull {
+            guard value["intent_hash"] is NSNull else { throw RealOptimizationError.invalid }; return nil
+        }
+        let body = try RealJSON.object(value, "intent")
+        try RoundtripJSON.keys(body, ["schema_version", "kind", "intent_id", "created_at", "expires_at", "consent_scope"])
+        guard try RoundtripJSON.number(body, "schema_version") == 1,
+              try RoundtripJSON.string(body, "kind") == "stats_global_collection_intent",
+              try RoundtripJSON.string(body, "consent_scope") == "global_diagnostics_v1" else { throw RealOptimizationError.invalid }
+        let intent = Self(id: try RoundtripJSON.string(body, "intent_id"), createdAt: try RoundtripJSON.string(body, "created_at"),
+                          expiresAt: try RoundtripJSON.string(body, "expires_at"), hash: try RoundtripJSON.string(value, "intent_hash"))
+        try intent.validate(at: now)
+        guard intent.hash == (try RoundtripJSON.digest(RealJSON.encode(body))) else { throw RealOptimizationError.invalid }
+        return intent
+    }
+    static func pollCommand(endpointID: String, sessionID: String) throws -> Data {
+        try command("next_global_collection_intent", endpointID: endpointID, sessionID: sessionID)
+    }
+    func declineCommand(endpointID: String, sessionID: String) throws -> Data {
+        try Self.command("resolve_global_collection_intent", endpointID: endpointID, sessionID: sessionID,
+                         fields: ["intent_id": id, "intent_hash": hash, "decision": "declined"])
+    }
+    func diagnoseCommand(request: RealDiagnosticRequest, endpointID: String, sessionID: String, at now: Date) throws -> Data {
+        try validate(at: now)
+        let body = try RoundtripJSON.object(request.json), consent = try RealJSON.object(body, "consent")
+        guard request.id == id, request.hash == RoundtripJSON.digest(request.json),
+              try RoundtripJSON.string(body, "client_request_id") == id,
+              try RoundtripJSON.date(request.createdAt) >= RoundtripJSON.date(createdAt),
+              try RoundtripJSON.date(request.expiresAt) <= RoundtripJSON.date(expiresAt),
+              try RoundtripJSON.date(RoundtripJSON.string(consent, "confirmed_at")) >= RoundtripJSON.date(createdAt) else { throw RealOptimizationError.noConsent }
+        return try Self.command("diagnose_real_for_intent", endpointID: endpointID, sessionID: sessionID,
+                                fields: ["intent_id": id, "intent_hash": hash, "client_request": request.envelope])
+    }
+    private static func command(_ operation: String, endpointID: String, sessionID: String, fields: [String: Any] = [:]) throws -> Data {
+        try RoundtripJSON.uuid(endpointID); try RoundtripJSON.uuid(sessionID)
+        var command = fields
+        command["schema_version"] = 2; command["op"] = operation; command["expected_instance_id"] = endpointID; command["native_session_id"] = sessionID
+        return Data(try RealJSON.encode(command).utf8)
     }
 }
 

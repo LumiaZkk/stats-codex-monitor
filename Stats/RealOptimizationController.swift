@@ -32,21 +32,39 @@ final class RealOptimizationController: NSObject {
     private var beforeWire: [String: Any]?
     private var displayManifest: String?
     private var requestConsumed = false
+    private let nativeSessionID = UUID().uuidString.lowercased()
+    private var collectionContext: (intent: RealCollectionIntent, endpoint: SyntheticRuntimeEndpoint)?
+    private var collectionApproved = false
+    private var collectionTimer: Timer?
+    private var collectionPollingEnabled = false
+    private var collectionPollInFlight = false
+    private var collectionPollGeneration = UUID()
+    private var collectionCancellation = SyntheticSocketCancellation()
+    private var seenCollections: [String: Date] = [:]
+    #if DIAGNOSTICS_TESTS
+    var testSocketExchange: ((Data) throws -> Data)?
+    var testProcessTable: (() -> RealProcessTable)?
+    #endif
 
     init(directory: URL, capture: @escaping Capture, recent: @escaping () -> [[String: Any]]) {
         self.capture = capture; self.recent = recent; storage = RealReceiptStorage(directory: directory)
         super.init()
+        ui.onClose = { [weak self] in
+            guard let self, self.collectionContext != nil, self.request == nil, self.activeID == nil else { return }
+            self.cancelPending(present: false)
+        }
         do { receipts = try storage.load(at: Date()); try storage.save(receipts) }
         catch { storageError = true; storageFailureDetail = String(describing: error) }
     }
     private func text(_ en: String, _ zh: String) -> String { DiagnosticText.text(en, zh) }
     private func show(_ title: String, _ intro: String, sections: [SyntheticSection] = [], buttons: [(String, Selector)] = [], loading: Bool = false, details: String = "", activate: Bool = true, progress: String? = nil) {
         ui.show(title: title, introduction: intro, sections: sections, progress: progress ?? status,
-                buttons: buttons.map { SyntheticStatusWindow.Button(title: $0.0, action: $0.1, enabled: !busy || $0.1 == #selector(cancel), isApproval: $0.1 == #selector(approve)) }, target: self,
+                buttons: buttons.map { SyntheticStatusWindow.Button(title: $0.0, action: $0.1, enabled: !busy || $0.1 == #selector(cancel), isApproval: [#selector(approve), #selector(confirmCollection), #selector(send)].contains($0.1)) }, target: self,
                 details: details, busy: loading, localEvidence: true, activate: activate, realOptimization: true)
     }
     @objc func open() {
         if busy { showProgress(); return }
+        if collectionContext != nil, !collectionApproved { showCollectionConsent(); return }
         if requestConsumed { showLast(); return }
         if let plan { showPlan(plan); return }
         if sample != nil { showPreview(); return }
@@ -57,23 +75,154 @@ final class RealOptimizationController: NSObject {
     }
     @objc private func collect() {
         guard !busy, activeID == nil, !storageError else { if storageError { fail(RealOptimizationError.storage) }; return }
-        resetPending(); busy = true
+        // An upload may have reached the runtime even when its response was lost.
+        // Preserve its exact consent/snapshot/hash until explicit cancellation.
+        guard request == nil || collectionContext == nil || requestConsumed else { fail(SyntheticSocketError.timeout); return }
+        let context = collectionContext, approved = collectionApproved
+        if let context {
+            guard approved else { showCollectionConsent(); return }
+            do { try context.intent.validate(at: Date()) } catch { fail(error); return }
+        }
+        resetPending(); collectionContext = context; collectionApproved = approved; busy = true
         status = text("Reading visible process counters twice over about2seconds…", "正在对可见进程读取两次计数，约需 2 秒…")
         showProgress()
-        let token = generation
+        let token = generation, cancellation = cancellation
         queue.async { [weak self] in
-            guard let self else { return }
-            let before = self.probe.processTable()
+            guard let self, (try? cancellation.check()) != nil else { return }
+            // No process-table read is reachable from metadata polling. A bound
+            // collection reaches here only after the native consent button.
+            if let context {
+                do { try context.intent.validate(at: Date()); try context.endpoint.validateCurrent() }
+                catch { DispatchQueue.main.async { [weak self] in
+                    guard let self, self.generation == token else { return }; self.busy = false; self.fail(error)
+                }; return }
+            }
+            let before = self.collectionProcessTable()
             self.queue.asyncAfter(deadline: .now() + 2) { [weak self] in
-                guard let self else { return }
-                let after = self.probe.processTable()
+                guard let self, (try? cancellation.check()) != nil else { return }
+                if let context, (try? context.intent.validate(at: Date())) == nil {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.generation == token else { return }; self.busy = false; self.fail(RealOptimizationError.expired)
+                    }; return
+                }
+                let after = self.collectionProcessTable()
                 let sample = self.probe.globalSample(before: before, after: after)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.generation == token else { return }
+                    if let context, (try? context.intent.validate(at: Date())) == nil { self.busy = false; self.fail(RealOptimizationError.expired); return }
                     self.busy = false; self.sample = sample; self.previewAt = Date(); self.snapshot = self.capture(); self.trend = self.recent()
                     self.status = self.text("Collected locally. Nothing has been uploaded.", "已在本机采集，尚未上传任何数据。")
                     self.showPreview()
                 }
+            }
+        }
+    }
+    private func collectionProcessTable() -> RealProcessTable {
+        #if DIAGNOSTICS_TESTS
+        if let testProcessTable { return testProcessTable() }
+        #endif
+        return probe.processTable()
+    }
+    // Dedicated metadata inbox only: no capture, process probe, upload, key read,
+    // service startup, or proposal execution is permitted by these polls.
+    func setCollectionRequestsEnabled(_ enabled: Bool) {
+        guard collectionPollingEnabled != enabled else { return }
+        collectionPollingEnabled = enabled; collectionTimer?.invalidate(); collectionTimer = nil
+        collectionCancellation.cancel(); collectionCancellation = SyntheticSocketCancellation()
+        collectionPollGeneration = UUID(); collectionPollInFlight = false
+        guard enabled else { return }
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.pollCollectionRequests() }
+        timer.tolerance = 1; collectionTimer = timer; RunLoop.main.add(timer, forMode: .common)
+        pollCollectionRequests()
+    }
+    private func pollCollectionRequests() {
+        let now = Date(); expireCollectionConsent(at: now); seenCollections = seenCollections.filter { $0.value > now }
+        guard collectionPollingEnabled, !collectionPollInFlight, !busy, !storageError,
+              collectionContext == nil, activeID == nil, (request == nil || requestConsumed),
+              (sample == nil || requestConsumed), seenCollections.count < 64 else { return }
+        collectionPollInFlight = true
+        let token = collectionPollGeneration, cancellation = collectionCancellation, session = nativeSessionID, seen = seenCollections
+        queue.async { [weak self] in
+            let result: Result<(RealCollectionIntent, SyntheticRuntimeEndpoint)?, Error> = Result {
+                let endpoints = try SyntheticRuntimeDiscovery.find(cancellation: cancellation)
+                let deadline = ProcessInfo.processInfo.systemUptime + 5
+                for endpoint in endpoints {
+                    try cancellation.check(); guard ProcessInfo.processInfo.systemUptime < deadline else { break }
+                    do {
+                        try endpoint.validateCurrent()
+                        let command = try RealCollectionIntent.pollCommand(endpointID: endpoint.descriptor.instanceID, sessionID: session)
+                        let reply = try endpoint.transport.exchange(command, cancellation: cancellation, peer: endpoint.peer, deadline: deadline, beforeSend: endpoint.validateCurrent)
+                        guard let intent = try RealCollectionIntent.parsePoll(reply, at: Date()) else { continue }
+                        let key = endpoint.descriptor.instanceID + ":" + intent.id
+                        if seen[key] != nil {
+                            // A cancelled/interrupted consent must not reappear or
+                            // gain authority when the same runtime repeats it.
+                            let decline = try intent.declineCommand(endpointID: endpoint.descriptor.instanceID, sessionID: session)
+                            _ = try endpoint.transport.exchange(decline, cancellation: cancellation, peer: endpoint.peer, deadline: deadline, beforeSend: endpoint.validateCurrent)
+                            continue
+                        }
+                        return (intent, endpoint)
+                    } catch { continue } // Unsupported, expired, or changed runtimes have no authority.
+                }
+                return nil
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.collectionPollGeneration == token, self.collectionPollingEnabled else { return }
+                self.collectionPollInFlight = false
+                guard case .success(let found) = result, let (intent, endpoint) = found else { return }
+                self.seenCollections[endpoint.descriptor.instanceID + ":" + intent.id] = try? RoundtripJSON.date(intent.expiresAt)
+                guard !self.busy, self.activeID == nil, self.collectionContext == nil,
+                      (self.request == nil || self.requestConsumed), (self.sample == nil || self.requestConsumed) else { return }
+                self.resetPending(); self.collectionContext = (intent, endpoint); self.showCollectionConsent()
+            }
+        }
+    }
+    private func expireCollectionConsent(at now: Date) {
+        guard let context = collectionContext, request == nil, activeID == nil,
+              (try? context.intent.validate(at: now)) == nil else { return }
+        let wasVisible = ui.window?.isVisible == true
+        resetPending(); busy = false
+        status = text("The collection request expired. Nothing was uploaded. Request a new diagnosis from your dot or start one here.", "采集请求已过期，未上传数据。你可以从 dot 请求新的诊断，也可以在这里重新开始。")
+        if wasVisible { open() }
+    }
+    private func showCollectionConsent() {
+        guard let context = collectionContext else { return }
+        status = text("One request is waiting. No diagnostic data has been collected or sent for it.", "有一次请求等待确认，尚未为它采集或发送诊断数据。")
+        show(text("Allow one global diagnosis request?", "允许这一次全局诊断请求吗？"),
+             text("Your dot requested a one-time diagnosis of this Mac. Choose Collect and preview to read a short global sample locally. You will review the actual data and separately agree before anything is uploaded.", "你的 dot 请求对这台 Mac 进行一次诊断。点击“采集并预览”后，才会在本机读取一次短时全局采样。你将先看到实际数据，再单独决定是否发送。"),
+             sections: [SyntheticSection(title: text("What this collection includes", "本次采集范围"), body: text("Current CPU, memory pressure, swap, free disk and disk activity; the largest visible resource consumers; eligible app display names; and up to 5 recent host samples. No app is selected in advance. No documents, window contents, arguments or keys are collected. Process paths and verified identities stay on this Mac.", "当前 CPU、内存压力、交换内存、磁盘空间与磁盘活动；占用较高的可见进程；符合条件的应用显示名；以及最多 5 个近期主机采样。无需先选应用，不采集文档、窗口内容、命令参数或密钥。进程路径和已核验身份仅留在本机。")),
+                        SyntheticSection(title: text("Your decisions remain separate", "每一步都由你决定"), body: text("This consent permits this local collection only. Sending the preview requires another confirmation. Any proposed local action requires its own exact approval. Closing this window declines this collection request.", "这里仅批准本次本机采集。发送预览需要再次确认，任何建议的本地操作也需要单独核对批准。关闭窗口会拒绝本次采集请求。"))],
+             buttons: [(text("Collect and preview", "采集并预览"), #selector(confirmCollection)), (text("Decline request", "拒绝本次请求"), #selector(cancel))],
+             details: "intent_id: \(context.intent.id)\nexpires_at: \(context.intent.expiresAt)\nintent_hash: \(context.intent.hash)\nruntime_instance: \(context.endpoint.descriptor.instanceID)")
+    }
+    @objc private func confirmCollection() {
+        guard !busy, let context = collectionContext, !collectionApproved else { return }
+        do { try context.intent.validate(at: Date()) } catch { fail(error); return }
+        busy = true; status = text("Checking that this exact request is still waiting…", "正在确认同一次请求仍有效…"); showProgress()
+        let token = generation, cancellation = cancellation, session = nativeSessionID
+        #if DIAGNOSTICS_TESTS
+        let testExchange = testSocketExchange
+        #endif
+        queue.async { [weak self] in
+            let result: Result<Void, Error> = Result {
+                let bytes = try RealCollectionIntent.pollCommand(endpointID: context.endpoint.descriptor.instanceID, sessionID: session)
+                let reply: Data
+                #if DIAGNOSTICS_TESTS
+                if let testExchange { reply = try testExchange(bytes) }
+                else {
+                    try context.endpoint.validateCurrent()
+                    reply = try context.endpoint.transport.exchange(bytes, cancellation: cancellation, peer: context.endpoint.peer, beforeSend: context.endpoint.validateCurrent)
+                }
+                #else
+                try context.endpoint.validateCurrent()
+                reply = try context.endpoint.transport.exchange(bytes, cancellation: cancellation, peer: context.endpoint.peer, beforeSend: context.endpoint.validateCurrent)
+                #endif
+                guard try RealCollectionIntent.parsePoll(reply, at: Date()) == context.intent else { throw RealOptimizationError.expired }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == token else { return }; self.busy = false
+                do { try result.get(); self.collectionApproved = true; self.collect() }
+                catch { self.fail(error) }
             }
         }
     }
@@ -112,11 +261,16 @@ final class RealOptimizationController: NSObject {
              buttons: [(text("Agree and analyze", "同意发送并分析"), #selector(send)), (text("Refresh data", "刷新数据"), #selector(collect)), (text("Cancel", "取消"), #selector(cancel))], details: detail)
     }
     @objc private func send() {
+        if request != nil, collectionContext != nil { retrySubmission(); return }
         guard !busy, let sample, let previewAt, Date().timeIntervalSince(previewAt) <= 30 else { fail(RealOptimizationError.changed); return }
         do {
             request = try RealDiagnosticRequest.create(sample: sample, snapshot: snapshot, recent: trend.filter { row in
                 guard let stamp = row["observed_at"] as? String, let date = try? RoundtripJSON.date(stamp) else { return false }; return Date().timeIntervalSince(date) <= 300
-            }, consentAt: Date(), at: Date())
+            }, consentAt: Date(), at: Date(), intent: collectionContext?.intent)
+            if let context = collectionContext {
+                guard collectionApproved else { throw RealOptimizationError.noConsent }
+                endpoint = context.endpoint; exchange("diagnose_real_for_intent"); return
+            }
             busy = true; status = text("Verifying the approved local runtime…", "正在核验已批准的本机运行端…"); showProgress()
             let token = generation, cancellation = cancellation
             queue.async { [weak self] in
@@ -145,8 +299,21 @@ final class RealOptimizationController: NSObject {
     private func exchangeJob(_ operation: String, receipt: [String: Any]? = nil) throws -> () throws -> RealSocketStatus {
         guard let request, let endpoint else { throw RealOptimizationError.invalid }
         let expected = binding, cancellation = cancellation
-        let data = try RealSocketStatus.command(operation, request: request, endpointID: endpoint.descriptor.instanceID, receipt: receipt, server: binding)
+        let data: Data
+        if operation == "diagnose_real_for_intent" {
+            guard let context = collectionContext, collectionApproved, context.endpoint.descriptor.instanceID == endpoint.descriptor.instanceID else { throw RealOptimizationError.noConsent }
+            data = try context.intent.diagnoseCommand(request: request, endpointID: endpoint.descriptor.instanceID, sessionID: nativeSessionID, at: Date())
+        } else { data = try RealSocketStatus.command(operation, request: request, endpointID: endpoint.descriptor.instanceID, receipt: receipt, server: binding) }
+        #if DIAGNOSTICS_TESTS
+        let testExchange = testSocketExchange
+        #endif
         return {
+            #if DIAGNOSTICS_TESTS
+            if let testExchange {
+                try cancellation.check()
+                return try RealSocketStatus.parse(testExchange(data), request: request, expected: expected, at: Date())
+            }
+            #endif
             try cancellation.check(); try endpoint.validateCurrent()
             let bytes = try endpoint.transport.exchange(data, cancellation: cancellation, peer: endpoint.peer, beforeSend: endpoint.validateCurrent)
             return try RealSocketStatus.parse(bytes, request: request, expected: expected, at: Date())
@@ -310,6 +477,7 @@ final class RealOptimizationController: NSObject {
     }
     private func finish(_ outcome: String, deliver: Bool = true, present: Bool = true) {
         timer?.invalidate(); timer = nil; gate?.finish(); receiptStatus = ""
+        collectionContext = nil; collectionApproved = false
         guard let id = activeID, let index = receipts.firstIndex(where: { $0.id == id }), let request, let plan else { return }
         let now = Date(), after = capture()
         receipts[index].completedAt = RoundtripJSON.timestamp(now); receipts[index].outcome = outcome; receipts[index].after = after
@@ -402,16 +570,29 @@ final class RealOptimizationController: NSObject {
             SyntheticSection(title: text("How to interpret this", "怎样理解结果"), body: text("Only compare new timestamps. Unchanged timestamps mean the same cached sample, not a new measurement. A short-term change does not establish cause or lasting improvement. If the slowdown remains, run another global diagnosis; do not repeatedly close apps based on this old plan.", "只有不同采样时间才能作为新的观测。时间相同表示同一份缓存，并非新测量。短期变化不能证明因果关系或长期改善。若仍然卡顿，可重新全局诊断，不要根据旧建议反复关闭应用。"))], buttons: [(text("New diagnosis", "重新诊断"), #selector(collect)), (text("Retry receipt delivery", "重试回传结果"), #selector(returnReceipt))], loading: busy, progress: receiptStatus.isEmpty ? (value.cloudReceiptConfirmed ? text("The runtime confirmed this exact result.", "运行端已确认同一份结果。") : text("Saved locally. Delivery to dot has not been confirmed.", "结果已保存在本机，尚未确认送达 dot。")) : receiptStatus)
     }
     private func showProgress(activate: Bool = true) { show(text("Diagnosis and optimization in progress", "诊断与优化进行中"), status, buttons: [(text("Cancel / stop observing", "取消／停止观测"), #selector(cancel))], loading: true, activate: activate) }
+    @objc private func retrySubmission() {
+        guard !busy, !requestConsumed, request != nil, endpoint != nil, collectionContext != nil, collectionApproved else { return }
+        exchange(retryOperation(at: Date()))
+    }
+    private func retryOperation(at now: Date) -> String {
+        // After expiry only inspect an existing request. A lost initial response
+        // must not require renewed collection consent to discover its outcome.
+        let expired = request.flatMap { try? RoundtripJSON.date($0.expiresAt) }.map { $0 <= now } ?? true
+        return binding != nil || expired ? "result_real" : "diagnose_real_for_intent"
+    }
     private func fail(_ error: Error) {
         status = error is RealOptimizationError ? error.localizedDescription : DiagnosticText.error(error)
-        show(text("This attempt cannot continue", "本次暂时无法继续"), status, buttons: [(text("Start again", "重新开始"), #selector(collect)), (text("Cancel", "取消"), #selector(cancel))], details: error.localizedDescription)
+        let retryBound = request != nil && collectionContext != nil && endpoint != nil && !requestConsumed
+        show(text("This attempt cannot continue", "本次暂时无法继续"), status,
+             buttons: [(retryBound ? text("Retry same request", "重试同一次请求") : text("Start again", "重新开始"), retryBound ? #selector(retrySubmission) : #selector(collect)), (text("Cancel", "取消"), #selector(cancel))], details: error.localizedDescription)
     }
-    @objc private func cancel() {
-        let oldRequest = request, oldEndpoint = endpoint, oldBinding = binding
+    @objc private func cancel() { cancelPending(present: true) }
+    private func cancelPending(present: Bool) {
+        let oldRequest = request, oldEndpoint = endpoint, oldBinding = binding, oldCollection = collectionContext, session = nativeSessionID
         timer?.invalidate(); timer = nil; cancellation.cancel(); cancellation = SyntheticSocketCancellation(); generation = UUID(); busy = false; gate?.cancel(); receiptStatus = ""
         if activeID != nil { finish("cancelled") }
         else {
-            resetPending(); status = text("Cancelled. No returned plan can start an action.", "已取消，返回的建议不能启动操作。"); open()
+            resetPending(); status = text("Cancelled. No returned plan can start an action.", "已取消，返回的建议不能启动操作。"); if present { open() }
             if let oldRequest, let oldEndpoint {
                 queue.async {
                     do {
@@ -421,14 +602,24 @@ final class RealOptimizationController: NSObject {
                         _ = try RealSocketStatus.parse(result, request: oldRequest, expected: oldBinding, at: Date())
                     } catch { /* Local cancellation remains authoritative. */ }
                 }
+            } else if let context = oldCollection {
+                queue.async {
+                    do {
+                        try context.endpoint.validateCurrent()
+                        let command = try context.intent.declineCommand(endpointID: context.endpoint.descriptor.instanceID, sessionID: session)
+                        let reply = try context.endpoint.transport.exchange(command, peer: context.endpoint.peer, beforeSend: context.endpoint.validateCurrent)
+                        guard try RealCollectionIntent.parsePoll(reply, at: Date()) == nil else { return }
+                    } catch { /* Local denial is final even if the runtime is gone. */ }
+                }
             }
         }
     }
     private func resetPending() {
         generation = UUID(); cancellation.cancel(); cancellation = SyntheticSocketCancellation(); timer?.invalidate(); timer = nil
-        request = nil; endpoint = nil; binding = nil; plan = nil; candidate = nil; gate = nil; displayManifest = nil; beforeWire = nil; sample = nil; previewAt = nil; requestConsumed = false; receiptStatus = ""
+        request = nil; endpoint = nil; binding = nil; plan = nil; candidate = nil; gate = nil; displayManifest = nil; beforeWire = nil; sample = nil; previewAt = nil; requestConsumed = false; receiptStatus = ""; collectionContext = nil; collectionApproved = false
     }
     func interrupt(reason: String) {
+        setCollectionRequestsEnabled(false)
         timer?.invalidate(); timer = nil; cancellation.cancel(); cancellation = SyntheticSocketCancellation(); generation = UUID(); busy = false; gate?.cancel(); receiptStatus = ""
         if activeID != nil {
             // Persist a terminal report, preserving any effect already accepted. No network during sleep/termination.
@@ -437,11 +628,26 @@ final class RealOptimizationController: NSObject {
         if reason != "app_termination", ui.window?.isVisible == true { showLast() }
     }
     func maintain(at now: Date) {
+        expireCollectionConsent(at: now)
         let pruned = RealReceiptStorage.pruned(receipts, at: now)
         if pruned.count != receipts.count { receipts = pruned; do { try storage.save(receipts) } catch { storageError = true; storageFailureDetail = String(describing: error) } }
     }
     func stop() { interrupt(reason: "app_termination") }
     #if DIAGNOSTICS_TESTS
+    func testOfferCollection(_ intent: RealCollectionIntent) {
+        resetPending()
+        let descriptor = SyntheticRuntimeDescriptor(instanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", uid: geteuid(), pid: getpid(), startedAt: intent.createdAt, expiresAt: intent.expiresAt, scopeHash: String(repeating: "a", count: 64), socketPath: "/tmp/isolated-ui-fixture/native.sock")
+        let identity = RuntimeFileIdentity(stat())
+        collectionContext = (intent, SyntheticRuntimeEndpoint(descriptor: descriptor, registry: URL(fileURLWithPath: "/tmp/isolated-ui-fixture"), registryIdentity: identity, fileIdentity: identity, bytes: Data(), peer: SyntheticSocketPeer(pid: getpid(), device: 0, inode: 0)))
+        showCollectionConsent()
+    }
+    func testSeedCollectionPreview(_ value: RealGlobalSample) {
+        collectionApproved = true; sample = value; snapshot = .empty; trend = []; previewAt = Date(); showPreview()
+    }
+    var testPendingCollection: Bool { collectionContext != nil }
+    func testExpireCollection(at now: Date) { expireCollectionConsent(at: now) }
+    var testPendingRequest: RealDiagnosticRequest? { request }
+    func testRetryOperation(at now: Date) -> String { retryOperation(at: now) }
     func testSeed(request: RealDiagnosticRequest, plan: RealPlan, sample: RealGlobalSample, host: RealHostSnapshot) {
         self.request = request; self.plan = plan; self.sample = sample; self.snapshot = host
         self.candidate = sample.candidates.first { $0.id == plan.candidateID }; self.busy = false; self.requestConsumed = false

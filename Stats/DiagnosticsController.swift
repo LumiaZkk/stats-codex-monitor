@@ -35,6 +35,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
             self?.captureLocalMetrics(metrics) ?? metrics.map { LocalMetricReading(metric: $0, value: nil, observedAt: nil, freshness: .unavailable) }
         }
         realOptimization = RealOptimizationController(directory: directory, capture: { [weak self] in self?.captureRealHost() ?? .empty }, recent: { [weak self] in self?.recentRealSamples() ?? [] })
+        realOptimization?.setCollectionRequestsEnabled(!Store.shared.bool(key: "pause", defaultValue: false))
         item.button?.title = "SD ·"
         item.button?.toolTip = DiagnosticText.text("Stats Diagnostics: local CPU, memory and disk history", "Stats 诊断：本地 CPU、内存和磁盘历史记录")
         let menu = NSMenu()
@@ -97,6 +98,7 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
     private func resetContinuity() {
         roundtrip?.interrupt(reason: "sleep_pause_or_collection_change")
         realOptimization?.interrupt(reason: "sleep_pause_or_collection_change")
+        realOptimization?.setCollectionRequestsEnabled(!sleeping && !Store.shared.bool(key: "pause", defaultValue: false))
         archive.rules.resetContinuity()
         skipNextCPU = true
         latest.removeAll()

@@ -82,6 +82,41 @@ rejects("server binding mismatch") { _ = try RealSocketStatus.parse(socketBytes,
 let command = try RealSocketStatus.command("diagnose_real", request: request, endpointID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
 check(command.count < 16384 && !command.contains(10), "One bounded frame")
 rejects("unknown socket operation") { _ = try RealSocketStatus.command("execute", request: request, endpointID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd") }
+let collectionID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", runtimeID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd", sessionID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+let intentBody: [String: Any] = ["schema_version": 1, "kind": "stats_global_collection_intent", "intent_id": collectionID,
+    "created_at": RoundtripJSON.timestamp(now), "expires_at": RoundtripJSON.timestamp(now.addingTimeInterval(600)), "consent_scope": "global_diagnostics_v1"]
+func pollBytes(_ body: [String: Any]?, hash: String? = nil) throws -> Data {
+    let digest = try body.map { try RoundtripJSON.digest(RealJSON.encode($0)) }
+    return Data(try RealJSON.encode(["result": ["schema_version": 1, "kind": "stats_global_collection_poll", "intent": body as Any? ?? NSNull(), "intent_hash": hash as Any? ?? digest as Any? ?? NSNull()]]).utf8)
+}
+let intent = try RealCollectionIntent.parsePoll(pollBytes(intentBody), at: now)!
+check(intent.id == collectionID, "One-shot metadata binds the collection ID")
+let emptyIntent = try RealCollectionIntent.parsePoll(pollBytes(nil), at: now)
+check(emptyIntent == nil, "Empty inbox has no implied collection")
+for field in ["pid", "path", "command", "candidate_id", "snapshot"] {
+    var changed = intentBody; changed[field] = "untrusted"
+    rejects("Collection intent must not carry targets or telemetry: " + field) { _ = try RealCollectionIntent.parsePoll(pollBytes(changed), at: now) }
+}
+var wrongScope = intentBody; wrongScope["consent_scope"] = "continuous_telemetry"
+rejects("Collection cannot widen consent scope") { _ = try RealCollectionIntent.parsePoll(pollBytes(wrongScope), at: now) }
+var longIntent = intentBody; longIntent["expires_at"] = RoundtripJSON.timestamp(now.addingTimeInterval(601))
+rejects("Collection lifetime is bounded") { _ = try RealCollectionIntent.parsePoll(pollBytes(longIntent), at: now) }
+rejects("Expired collection is rejected") { _ = try RealCollectionIntent.parsePoll(pollBytes(intentBody), at: now.addingTimeInterval(600)) }
+rejects("Collection hash mismatch") { _ = try RealCollectionIntent.parsePoll(pollBytes(intentBody, hash: String(repeating: "0", count: 64)), at: now) }
+rejects("Null inbox cannot carry a hash") { _ = try RealCollectionIntent.parsePoll(pollBytes(nil, hash: intent.hash), at: now) }
+let pollCommand = try RoundtripJSON.object(RealCollectionIntent.pollCommand(endpointID: runtimeID, sessionID: sessionID))
+check(Set(pollCommand.keys) == Set(["schema_version", "op", "expected_instance_id", "native_session_id"]), "Polling sends only fixed protocol metadata")
+check(pollCommand["native_session_id"] as? String == sessionID, "Claim binds the native session")
+let declineCommand = try RoundtripJSON.object(intent.declineCommand(endpointID: runtimeID, sessionID: sessionID))
+check(declineCommand["decision"] as? String == "declined" && declineCommand["intent_hash"] as? String == intent.hash, "Denial binds this exact intent")
+let emptySample = RealGlobalSample(candidates: [], consumers: [], coverage: body["coverage"] as! [String: Any])
+let intentRequest = try RealDiagnosticRequest.create(sample: emptySample, snapshot: .empty, recent: [], consentAt: now.addingTimeInterval(2), at: now.addingTimeInterval(2), intent: intent)
+check(intentRequest.id == intent.id && intentRequest.expiresAt == intent.expiresAt, "Fresh request uses original intent ID and cannot extend deadline")
+rejects("Consent before intent creation") { _ = try RealDiagnosticRequest.create(sample: emptySample, snapshot: .empty, recent: [], consentAt: now.addingTimeInterval(-1), at: now, intent: intent) }
+let intentUpload = try intent.diagnoseCommand(request: intentRequest, endpointID: runtimeID, sessionID: sessionID, at: now.addingTimeInterval(3))
+let retryIntentUpload = try intent.diagnoseCommand(request: intentRequest, endpointID: runtimeID, sessionID: sessionID, at: now.addingTimeInterval(4))
+check(retryIntentUpload == intentUpload, "Uncertain upload retries byte-identical request and consent")
+rejects("Unrelated request cannot consume collection consent") { _ = try intent.diagnoseCommand(request: request, endpointID: runtimeID, sessionID: sessionID, at: now) }
 let localOnly = ["bundlePath", "executablePath", "codeHash", "startedSeconds", "pid", "teamID"]
 let wire = try RealJSON.encode(candidate.wire())
 check(localOnly.allSatisfy { !wire.contains("\"" + $0 + "\"") }, "Wire target has no local identity fields")
