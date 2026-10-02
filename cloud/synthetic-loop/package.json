@@ -1,0 +1,26 @@
+{
+  "name": "stats-synthetic-loop-contract",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mts",
+    "typecheck": "tsc --noEmit",
+    "test:official-tunnel": "node scripts/probe-official-tunnel.mts",
+    "test:private-runtime": "node scripts/probe-private-runtime.mts && node scripts/probe-runtime-watchdog.mts && node scripts/probe-runtime-shutdown.mts",
+    "test:public-doh": "node scripts/probe-public-doh.mts",
+    "build:panel": "node scripts/build-panel.mjs",
+    "check:panel": "node scripts/build-panel.mjs --check",
+    "pretest": "npm run build:panel"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260515.1",
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/node": "22.19.19",
+    "esbuild": "0.28.0",
+    "typescript": "5.9.3"
+  }
+}
