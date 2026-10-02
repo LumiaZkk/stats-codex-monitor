@@ -25,7 +25,10 @@ export class PanelController {
   private retryOperation: Operation | null = null;
   constructor(options: PanelOptions) {
     this.options = options; this.now = options.now ?? Date.now;
-    this.setTimer = options.setTimer ?? setTimeout; this.clearTimer = options.clearTimer ?? clearTimeout;
+    // Browser timer methods require the Window receiver. A bare reference
+    // later invoked as this.setTimer would receive the controller instead.
+    this.setTimer = options.setTimer ?? ((fn,delay)=>globalThis.setTimeout(fn,delay));
+    this.clearTimer = options.clearTimer ?? (timer=>globalThis.clearTimeout(timer));
     this.expiryTimer = this.setTimer(() => {
       if (!this.state.initial && this.state.phase === 'booting') this.offline('initial_result_unavailable');
     }, 15000);

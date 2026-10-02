@@ -11,6 +11,22 @@ import { installPanel, type PanelApp } from '../ui/panel-view.mts';
 import { PANEL_SCRIPT, PANEL_BUILD_HASH, PANEL_HTML, PANEL_CONTENT_HASH, PANEL_URI, panelResource } from '../ui/panel-resource.mts';
 
 const START = Date.parse('2026-10-01T15:00:00.000Z');
+test('default browser timers retain the global receiver during startup and teardown',()=>{
+  const originalSet=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
+  let scheduled=0,cleared=0;
+  globalThis.setTimeout=function(this:unknown,_callback:()=>void,_delay:number){
+    assert.equal(this,globalThis,'Browser timer receiver must be Window, not PanelController');
+    scheduled++;return 123 as unknown as ReturnType<typeof setTimeout>;
+  } as typeof setTimeout;
+  globalThis.clearTimeout=function(this:unknown,id:ReturnType<typeof setTimeout>){
+    assert.equal(this,globalThis);assert.equal(id,123);cleared++;
+  } as typeof clearTimeout;
+  try{
+    const panel=new PanelController({callTool:async()=>({}),render:()=>{}});
+    assert.equal(panel.state.phase,'booting');panel.dispose();
+    assert.equal(scheduled,1);assert.equal(cleared,1);
+  }finally{globalThis.setTimeout=originalSet;globalThis.clearTimeout=originalClear;}
+});
 class Clock {
   time = START; sequence = 0; timers = new Map<number, { at: number; fn: () => void }>();
   now = () => this.time;
