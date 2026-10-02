@@ -1,3 +1,5 @@
+> Development increment: [real global diagnosis and approved local optimization](docs/REAL_DIAGNOSTICS.md). This is not yet a notarized release; live acceptance is required.
+
 # stats-codex-monitor
 
 A local-first macOS performance companion, built as a small native extension of [Stats](https://github.com/exelban/stats).
@@ -6,7 +8,7 @@ CPU, memory, swap and startup-disk monitoring stay on your Mac. Open **SD → Di
 
 **Status: experimental source preview, version 0.4.0/build4.** This branch removes temporary-folder selection: explicit synthetic diagnosis automatically discovers the live foreground runtime, retrieves its result, and preserves separately approved bounded local tests. GitHub CI covers Swift assertions and unsigned compilation; check the exact commit run. Native UI/consent/interruption validation is still required. This is not a notarized release.
 
-[Automatic runtime discovery](docs/NATIVE_RUNTIME_DISCOVERY.md) · [Native socket preview](docs/NATIVE_SOCKET_ROUNDTRIP.md) · [Manual test protocol](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
+[One-shot global collection](docs/NATIVE_GLOBAL_COLLECTION.md) · [Automatic runtime discovery](docs/NATIVE_RUNTIME_DISCOVERY.md) · [Native socket preview](docs/NATIVE_SOCKET_ROUNDTRIP.md) · [Manual test protocol](docs/NATIVE_SYNTHETIC_ROUNDTRIP.md) · [简体中文](README.zh-CN.md) · [Mac build and QA](docs/MAC_VALIDATION.md) · [Architecture and privacy](docs/ARCHITECTURE.md)
 
 ## What this adds
 
@@ -67,3 +69,5 @@ Future adapters should preserve preview/consent, bounded data, no background LLM
 ## Upstream and license
 
 Based on Stats **v3.0.19**, commit `e42ffdf3fe9cf789649a741ab2a0fb15f377b7f3`, by Serhiy Mytrovtsiy and contributors. Upstream copyright notices and [MIT LICENSE](LICENSE) are preserved; [the original README](UPSTREAM_README.md) is retained. This is an independent experimental fork, not an official Stats or OpenAI product.
+
+The 0.5 preview adds Simplified Chinese diagnostics UI and visible request progress, connection help, and local receipt summaries. See [UI behavior and validation](docs/CHINESE_STATUS_UI.md).

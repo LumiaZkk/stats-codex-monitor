@@ -2,13 +2,15 @@
 import Cocoa
 import Darwin
 
-final class SyntheticRoundtripController: NSObject {
+final class SyntheticRoundtripController: NSObject, NSMenuItemValidation {
     typealias Capture = ([LocalMetric]) -> [LocalMetricReading]
     private let storage: LocalRoundtripStorage
     private let capture: Capture
+    private let discover: (SyntheticSocketCancellation) throws -> [SyntheticRuntimeEndpoint]
     private var state = LocalRoundtripState()
-    private var window: NSWindow?
-    private var textView: NSTextView?
+    private let statusWindow = SyntheticStatusWindow()
+    private var window: NSWindow? { statusWindow.window }
+    private var lastConnectionError: Error?
     private var displayedManifestHash: String?
     private var generation = UUID()
     private var observationTimer: Timer?
@@ -21,38 +23,59 @@ final class SyntheticRoundtripController: NSObject {
     private var pollingTimer: Timer?
     private var exchangeGeneration = UUID()
     private var exchangeInFlight = false
-    private var socketMessage = "Send explicitly to find the approved local runtime and start a synthetic test."
+    private var socketMessage = DiagnosticText.text("See a simulated suggestion, decide whether to approve a local test, then view its result.", "看一份模拟建议，由你决定是否批准本地测试，最后查看结果。")
     private var socketRequestID: String?
     private var socketBinding: SyntheticSocketBinding?
     private var approvalCheckInFlight = false
     private var socketCancellation = SyntheticSocketCancellation()
 
 
-    init(directory: URL, capture: @escaping Capture) {
+    init(directory: URL, capture: @escaping Capture,
+         discover: @escaping (SyntheticSocketCancellation) throws -> [SyntheticRuntimeEndpoint] = { try SyntheticRuntimeDiscovery.find(cancellation: $0) }) {
         storage = LocalRoundtripStorage(directory: directory)
-        self.capture = capture
+        self.capture = capture; self.discover = discover
         super.init()
         do { state = try storage.load(at: Date()); try storage.save(state) }
         catch { storageFailure = "Local roundtrip state could not be read safely. No local action is available." }
     }
     func appendMenu(to menu: NSMenu) {
-        let root = NSMenuItem(title: "Synthetic diagnosis with dot", action: nil, keyEquivalent: "")
+        let root = NSMenuItem(title: DiagnosticText.text("Synthetic diagnosis with dot", "与 dot 进行合成诊断测试"), action: nil, keyEquivalent: "")
         let submenu = NSMenu()
-        add("Send synthetic diagnosis to dot", #selector(sendSynthetic), to: submenu)
-        add("Review status / proposal…", #selector(reviewCurrent), to: submenu)
-        add("Retry same pending request", #selector(retrySocketRequest), to: submenu)
-        add("Cancel request / local check", #selector(cancel), to: submenu)
-        add("Last local receipt…", #selector(showReceipt), to: submenu)
+        add(DiagnosticText.text("Send synthetic test…", "发送合成测试…"), #selector(sendSynthetic), to: submenu)
+        add(DiagnosticText.text("Status / review proposal…", "查看状态／审核建议…"), #selector(reviewCurrent), to: submenu)
+        add(DiagnosticText.text("Retry same pending request", "重试本次请求"), #selector(retrySocketRequest), to: submenu)
+        add(DiagnosticText.text("Cancel request / local test", "取消请求／本地测试"), #selector(cancel), to: submenu)
+        add(DiagnosticText.text("Last local receipt…", "最近一次本地回执…"), #selector(showReceipt), to: submenu)
         submenu.addItem(.separator())
-        add("Check local runtime status…", #selector(checkRuntimeStatus), to: submenu)
-        let files = NSMenuItem(title: "Manual file test tools", action: nil, keyEquivalent: "")
+        add(DiagnosticText.text("Check connection…", "检查连接…"), #selector(checkRuntimeStatus), to: submenu)
+        add(DiagnosticText.text("Connection help…", "连接帮助…"), #selector(connectionHelp), to: submenu)
+        let files = NSMenuItem(title: DiagnosticText.text("Advanced file test tools", "高级：文件测试工具"), action: nil, keyEquivalent: "")
         let fileMenu = NSMenu()
-        add("Create file-test request…", #selector(createRequest), to: fileMenu)
-        add("Save pending request…", #selector(saveRequest), to: fileMenu)
-        add("Import returned proposal…", #selector(importProposal), to: fileMenu)
+        add(DiagnosticText.text("Create file-test request…", "创建文件测试请求…"), #selector(createRequest), to: fileMenu)
+        add(DiagnosticText.text("Save pending request…", "保存待处理请求…"), #selector(saveRequest), to: fileMenu)
+        add(DiagnosticText.text("Import returned proposal…", "导入返回的建议…"), #selector(importProposal), to: fileMenu)
         files.submenu = fileMenu; submenu.addItem(files)
         root.submenu = submenu; menu.addItem(root)
     }
+    private var controls: SyntheticControlState {
+        SyntheticControlState(phase: state.phase, discovering: discoveryInFlight, exchanging: exchangeInFlight,
+                              polling: pollingTimer != nil, checkingApproval: approvalCheckInFlight, hasReceipt: !state.receipts.isEmpty)
+    }
+    private func enabled(_ action: Selector) -> Bool {
+        switch action {
+        case #selector(sendSynthetic): return controls.canSend
+        case #selector(retrySocketRequest): return controls.canRetry
+        case #selector(checkRuntimeStatus): return controls.canCheck
+        case #selector(authorize): return controls.canApprove
+        case #selector(cancel): return controls.canCancel
+        case #selector(showReceipt), #selector(saveReceipt): return controls.hasReceipt && !controls.busy
+        case #selector(createRequest): return controls.canSend && state.phase != .waiting
+        case #selector(saveRequest): return state.phase == .waiting && !controls.busy
+        case #selector(importProposal): return state.phase == .waiting && state.runtimeInstanceID == nil && !controls.busy
+        default: return true
+        }
+    }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { menuItem.action.map(enabled) ?? true }
     @objc private func checkRuntimeStatus() { discoverRuntime(submit: false) }
     @objc private func sendSynthetic() {
         guard !discoveryInFlight, !exchangeInFlight, pollingTimer == nil,
@@ -68,11 +91,12 @@ final class SyntheticRoundtripController: NSObject {
               ![.reviewing, .executing].contains(state.phase) else { reviewCurrent(); return }
         let token = exchangeGeneration, cancellation = socketCancellation
         let boundInstance = state.phase == .waiting ? state.runtimeInstanceID : nil
-        discoveryInFlight = true
-        present(title: "Finding local runtime", text: "Checking only the dedicated private runtime registry. No diagnosis has been sent. This takes at most a few seconds. You do not need to find a folder or provide a key to this app.", buttons: [("Cancel", #selector(cancel))])
+        discoveryInFlight = true; lastConnectionError = nil
+        present(title: DiagnosticText.text("Finding the local connection…", "正在查找本机连接…"), text: DiagnosticText.text("Checking the private runtime. This takes up to 5 seconds. No request has been sent yet.", "正在验证本机运行端，最多需要 5 秒。此时尚未发送测试请求。"), buttons: [(DiagnosticText.text("Send test", "发送测试"), #selector(sendSynthetic)), (DiagnosticText.text("Cancel", "取消"), #selector(cancel))], busy: true)
         socketQueue.async { [weak self] in
-            let result = Result { try SyntheticRuntimeDiscovery.find(cancellation: cancellation) }
-            DispatchQueue.main.async {
+            guard let self else { return }
+            let result = Result { try self.discover(cancellation) }
+            DispatchQueue.main.async { [weak self] in
                 guard let self, self.exchangeGeneration == token else { return }
                 self.discoveryInFlight = false
                 do {
@@ -84,15 +108,16 @@ final class SyntheticRoundtripController: NSObject {
                     else {
                         let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 510, height: 28), pullsDown: false)
                         eligible.forEach { picker.addItem(withTitle: $0.label) }
-                        let alert = NSAlert(); alert.messageText = "Choose an active local runtime"
-                        alert.informativeText = "More than one verified same-user runtime is active. Each session name matches the end of its Terminal’s “Private run directory” line. Choose the intended session; no folder browsing is needed. Nothing is sent until you choose."
+                        let alert = NSAlert(); alert.messageText = DiagnosticText.text("Choose a local session", "选择本机运行会话")
+                        alert.informativeText = DiagnosticText.text("Several verified sessions are active. Match the session name to the end of the “Private run directory” line in its Terminal. Select the intended session before sending.", "发现多个已验证的运行会话。请对照终端中“Private run directory”一行末尾的名称，选择本次要使用的会话。选择前不会发送请求。")
                         alert.accessoryView = picker
-                        alert.addButton(withTitle: submit ? "Use selected runtime and send" : "Use selected runtime"); alert.addButton(withTitle: "Cancel")
+                        alert.addButton(withTitle: submit ? DiagnosticText.text("Select and send", "选择并发送") : DiagnosticText.text("Select", "选择")); alert.addButton(withTitle: DiagnosticText.text("Cancel", "取消"))
                         guard alert.runModal() == .alertFirstButtonReturn, self.exchangeGeneration == token else { self.reviewCurrent(); return }
                         endpoint = eligible[picker.indexOfSelectedItem]
                     }
                     self.runtimeEndpoint = endpoint
-                    self.socketMessage = "Connected to \(endpoint.label). No credentials were read."
+                    self.lastConnectionError = nil
+                    self.socketMessage = DiagnosticText.text("Last connection check passed at \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)). Send will verify it again before sharing the fixture.", "上次连接检查通过（\(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))）。发送前会再次核验连接。")
                     if submit {
                         if self.state.phase != .waiting {
                             try self.transition { _ = try $0.create(at: Date()) }
@@ -104,7 +129,8 @@ final class SyntheticRoundtripController: NSObject {
                     } else { self.reviewCurrent() }
                 } catch {
                     self.runtimeEndpoint = nil
-                    self.socketMessage = error.localizedDescription
+                    self.lastConnectionError = error
+                    self.socketMessage = DiagnosticText.error(error)
                     self.reviewCurrent()
                 }
             }
@@ -122,7 +148,8 @@ final class SyntheticRoundtripController: NSObject {
             _ = try SyntheticSocketProtocol.command(operation, request: request, at: Date(), expectedInstanceID: endpoint.descriptor.instanceID)
             let token = exchangeGeneration, cancellation = socketCancellation
             exchangeInFlight = true
-            socketMessage = operation == .diagnose ? "Submitting the fixed synthetic test. No local action is authorized." : "Waiting for dot's synthetic proposal. No local action is authorized."
+            lastConnectionError = nil
+            socketMessage = operation == .diagnose ? DiagnosticText.text("Sending the synthetic request…", "正在发送合成测试请求…") : DiagnosticText.text("Waiting for dot to return a proposal. Nothing is running on this Mac.", "正在等待 dot 返回建议，本机尚未执行任何操作。")
             if operation == .diagnose { reviewCurrent() }
             socketQueue.async { [weak self] in
                 let result = Result { try endpoint.exchange(operation, request: request, cancellation: cancellation) }
@@ -135,7 +162,7 @@ final class SyntheticRoundtripController: NSObject {
                         self.socketBinding = response.binding
                         switch response.status {
                         case .requested:
-                            self.socketMessage = "Synthetic request accepted. Waiting for a returned proposal; callback acknowledgement alone does not mean analysis is complete. Close this window to keep waiting, or Cancel to stop."
+                            self.socketMessage = DiagnosticText.text("Request accepted. Waiting for dot’s proposal; analysis is not complete yet. This window may be closed while waiting.", "请求已接收，正在等待 dot 返回建议；分析尚未完成。等待期间可以关闭此窗口。")
                             self.scheduleRetrieval()
                             if operation == .diagnose { self.reviewCurrent() }
                         case .proposed:
@@ -146,17 +173,18 @@ final class SyntheticRoundtripController: NSObject {
                         case .cancelled, .expired:
                             self.stopRetrieval()
                             try self.transition { try $0.cancel(at: Date()) }
-                            self.socketMessage = "The runtime reports this request is \(response.status.rawValue). No local action is authorized."
+                            self.socketMessage = response.status == .expired ? DiagnosticText.text("The request expired. Start a new test when ready.", "本次请求已过期，可以重新开始测试。") : DiagnosticText.text("The runtime cancelled this request. No action was authorized.", "运行端已取消本次请求，未授权任何操作。")
                             self.reviewCurrent()
                         }
                     } catch {
                         self.stopRetrieval()
-                        self.socketMessage = error.localizedDescription + "\nRetrieval stopped. Retry uses the same pending request."
+                        self.lastConnectionError = error
+                        self.socketMessage = DiagnosticText.error(error) + DiagnosticText.text("\nResult checks stopped. Retry reuses this request.", "\n已停止查询结果。重试会继续使用本次请求。")
                         self.reviewCurrent()
                     }
                 }
             }
-        } catch { stopRetrieval(); socketMessage = error.localizedDescription; reviewCurrent() }
+        } catch { stopRetrieval(); lastConnectionError = error; socketMessage = DiagnosticText.error(error); reviewCurrent() }
     }
     private func scheduleRetrieval() {
         pollingTimer?.invalidate()
@@ -179,9 +207,9 @@ final class SyntheticRoundtripController: NSObject {
                 guard let self, self.exchangeGeneration == token, self.state.phase == .cancelled else { return }
                 switch result {
                 case .success(let response) where response.status == .cancelled:
-                    self.socketMessage = "Cancelled locally and acknowledged by the runtime. An event already delivered to dot cannot be recalled."
+                    self.socketMessage = DiagnosticText.text("Cancelled locally and confirmed by the runtime. An event already delivered to dot cannot be recalled.", "本地已取消，运行端也已确认。已送达 dot 的事件无法撤回。")
                 default:
-                    self.socketMessage = "Cancelled locally. Runtime cancellation could not be confirmed; an already sent event may still be analyzed, but its result cannot authorize local actions."
+                    self.socketMessage = DiagnosticText.text("Cancelled locally. Remote cancellation is unconfirmed. A sent event may still be analyzed, but its result cannot start a local action.", "本地已取消，运行端的取消状态尚未确认。已发送的事件可能继续被分析，但返回结果不能启动本地操作。")
                 }
                 self.reviewCurrent()
             }
@@ -203,64 +231,69 @@ final class SyntheticRoundtripController: NSObject {
         do {
             try transition { _ = try $0.create(at: Date()) }
             generation = UUID(); socketRequestID = nil; socketBinding = nil; runtimeEndpoint = nil
-            socketMessage = "Manual file-test request. Use the secondary file tools to save/import it."
+            socketMessage = DiagnosticText.text("Manual file test. Save the request and import its returned proposal using Advanced tools.", "这是手动文件测试。请通过高级工具保存请求并导入返回建议。")
             reviewCurrent()
         } catch { show(error) }
     }
     @objc private func reviewCurrent() {
         if let failure = storageFailure { show(RoundtripError.invalid(failure)); return }
+        if discoveryInFlight || approvalCheckInFlight { window?.makeKeyAndOrderFront(nil); return }
         if state.phase == .executing { showRunning(); return }
         if state.phase == .reviewing, let proposal = state.proposal {
             displayedManifestHash = proposal.manifestHash
-            let actions = proposal.actions.enumerated().map { "\($0.offset + 1). \($0.element.description)" }.joined(separator: "\n")
-            present(title: "SYNTHETIC · Unverified proposal · Local review", text: """
-            SYNTHETIC FIXTURE — this is not a diagnosis of this Mac.
-            UNVERIFIED PROPOSAL ORIGIN: SHA-256 checks bytes and request binding, not the author. The same-user local socket is a transport boundary, not proof of model identity.
-
-            Cloud proposal remains dry_run=true. Nothing has executed.
-            The actions below form a separate local test manifest. Approval here authorizes only these native functions on this Mac; it never authorizes a remote command or an optimization.
-
-            EXACT LOCAL TEST ACTIONS
-            \(actions)
-
-            LOCAL RECEIPT EVIDENCE
-            Before/after cached readings: \(metrics(for: proposal).map { $0.rawValue }.joined(separator: ", ")).
-            Freshness and source timestamps are preserved; stale/missing data is not measured improvement.
-
-            No shell, process termination, settings change, deletion, receipt upload, new collector, or native remote listener is available.
-            Observations stay local. Opening Activity Monitor is not a completed optimization.
-
-            UNTRUSTED HUMAN-READABLE SUMMARY (inert text)
-            \(proposal.untrustedSummary)
-
-            Client request: \(proposal.clientRequestID)
-            Expires: \(proposal.expiresAt)
-            Proposal hash: \(proposal.proposalHash)
-            Local manifest hash: \(proposal.manifestHash)
-            """, buttons: [("Authorize local test…", #selector(authorize)), ("Cancel request", #selector(cancel))])
+            let model = SyntheticExperience.proposal(proposal)
+            let details = "Client request: \(proposal.clientRequestID)\nExpires: \(proposal.expiresAt)\nProposal SHA-256: \(proposal.proposalHash)\nLocal manifest SHA-256: \(proposal.manifestHash)"
+            presentExperience(model, buttons: [(DiagnosticText.text("Review local approval…", "查看并决定是否批准…"), #selector(authorize)), (DiagnosticText.text("Do not run", "不执行"), #selector(cancel))], details: details)
             return
         }
         displayedManifestHash = nil
-        if state.phase == .waiting, let request = state.request {
-            let json = (try? request.json()) ?? "Unavailable"
-            present(title: "SYNTHETIC · Request preview", text: """
-            SYNTHETIC TEST ONLY — no real telemetry, device identity or credentials.
-            The fixed server fixture is CPU 92%, normal memory pressure, disk 80 GiB.
-            It does not describe this Mac.
-
-            \(socketMessage)
-
-            Explicit Send automatically finds a verified live foreground runtime and shares only this fixed fixture. The app retrieves only this request's result every 5 seconds. Nothing resumes automatically after app restart. Closing this preview does not cancel the request; use Cancel.
-
-            Returned proposals remain dry_run=true. Exact allowed actions require separate local review and approval. Real before/after measurements and receipts remain on this Mac. No key, real telemetry, process detail or filesystem content is sent.
-
-            This request is bound to this local installation and expires after 30 minutes. The runtime instance is pinned for this request, including after app restart; cancel before switching to another runtime. File tools remain available only for manual testing.
-
-            \(json)
-            """, buttons: [("Retry same request", #selector(retrySocketRequest)), ("Cancel request", #selector(cancel))])
+        let active = exchangeInFlight || pollingTimer != nil
+        let title: String
+        if let error = lastConnectionError {
+            title = error is RuntimeDiscoveryError ? DiagnosticText.text("Local connection unavailable", "尚未连接本机运行端") : DiagnosticText.text("Request could not finish", "请求暂未完成")
+        } else if active {
+            title = pollingTimer != nil || socketBinding != nil ? DiagnosticText.text("Waiting for dot…", "正在等待 dot 返回建议…") : DiagnosticText.text("Sending test…", "正在发送测试…")
+        } else if state.phase == .cancelled {
+            title = DiagnosticText.text("Request cancelled", "请求已取消")
+        } else if state.phase == .waiting {
+            title = DiagnosticText.text("Request paused · ready to retry", "请求已暂停，可重试")
+        } else if state.phase == .completed || state.phase == .interrupted {
+            title = DiagnosticText.outcome(state.receipts.last?.outcome ?? "interrupted")
+        } else if runtimeEndpoint != nil {
+            title = DiagnosticText.text("Last connection check passed", "上次连接检查已通过")
         } else {
-            present(title: "Synthetic roundtrip", text: "SYNTHETIC TEST ONLY. State: \(state.phase.rawValue)\n\n\(socketMessage)\n\nSend shares the fixed CPU 92% / normal memory / 80 GiB fixture with the subscribed dot, and may use your model plan. It does not describe this Mac. Real actions require separate local approval. Cancelled, expired or already imported results cannot be replayed.", buttons: [("Send synthetic diagnosis", #selector(sendSynthetic)), ("Check runtime status", #selector(checkRuntimeStatus)), ("Last receipt", #selector(showReceipt))])
+            title = DiagnosticText.text("Try a guided simulated diagnosis", "体验一次模拟诊断")
         }
+        let explanation = socketMessage + "\n\n" + (active ? DiagnosticText.text(
+            "Results are checked every 5 seconds. Closing the window keeps waiting; Cancel stops this request. Local actions will always need separate approval.",
+            "每 5 秒查询一次结果。关闭窗口后会继续等待；点击“取消请求”才会停止。本地操作始终需要另行审核和批准。") : DiagnosticText.text(
+            "Send uses the fixed synthetic fixture and may use your model plan. It does not upload this Mac’s readings. Returned suggestions need your separate approval before any local test.",
+            "发送会使用固定的合成样例，并可能使用你的模型额度；不会上传这台 Mac 的读数。收到建议后，仍需你另行批准才会进行本地测试。"))
+        var details = state.request.flatMap { try? $0.json() } ?? ""
+        if let endpoint = runtimeEndpoint { details += "\nRuntime: \(endpoint.label)" }
+        if let error = lastConnectionError { details += "\n\n" + error.localizedDescription }
+        var buttons: [(String, Selector)] = state.phase == .waiting ? [
+            (DiagnosticText.text("Retry same request", "重试本次请求"), #selector(retrySocketRequest)),
+            (DiagnosticText.text("Cancel request", "取消请求"), #selector(cancel)),
+            (DiagnosticText.text("Connection help", "连接帮助"), #selector(connectionHelp))
+        ] : [
+            (DiagnosticText.text("Send synthetic test", "发送合成测试"), #selector(sendSynthetic)),
+            (DiagnosticText.text("Check connection", "检查连接"), #selector(checkRuntimeStatus)),
+            (DiagnosticText.text("Connection help", "连接帮助"), #selector(connectionHelp))
+        ]
+        if [.completed, .interrupted].contains(state.phase), !state.receipts.isEmpty {
+            buttons = [(DiagnosticText.text("View local receipt", "查看本地回执"), #selector(showReceipt)), buttons[0], buttons[2]]
+        }
+        present(title: title, text: explanation, buttons: buttons, details: details, busy: active)
+    }
+    @objc private func connectionHelp() {
+        let alert = NSAlert()
+        alert.messageText = DiagnosticText.text("Connect the local runtime", "连接本机运行端")
+        alert.informativeText = DiagnosticText.text(
+            "1. Open the approved foreground runtime in Terminal.\n2. If Terminal asks for a temporary key, enter it there yourself. Keep that Terminal session open.\n3. Return here and choose Check connection, then Send synthetic test.\n\nA runtime becomes discoverable only after it is ready. The app cannot tell whether an absent runtime is stopped, expired, or waiting for key entry. No folder selection is needed. This app cannot start the runtime or read your key.",
+            "1. 在终端打开已批准的前台运行端。\n2. 如果终端提示输入临时密钥，请直接在那里自行输入，并保持该终端会话运行。\n3. 回到此窗口，点击“检查连接”，连接就绪后再“发送合成测试”。\n\n运行端准备就绪后才可被发现。未发现时，应用无法判断它是已退出、已过期，还是正在等待输入密钥。无需选择文件夹；本应用不能代为启动运行端或读取密钥。")
+        alert.addButton(withTitle: DiagnosticText.text("Got it", "知道了"))
+        alert.runModal()
     }
     @objc private func saveRequest() {
         guard state.phase == .waiting, let request = state.request else { return }
@@ -272,7 +305,7 @@ final class SyntheticRoundtripController: NSObject {
     @objc private func importProposal() {
         guard !discoveryInFlight, !exchangeInFlight, pollingTimer == nil, state.phase == .waiting, state.runtimeInstanceID == nil else { show(RoundtripError.invalid("Create a separate manual request for file import; runtime-bound requests use verified socket retrieval. Replayed or already imported proposals are rejected.")); return }
         let panel = NSOpenPanel()
-        panel.title = "Import an untrusted SYNTHETIC result JSON"
+        panel.title = DiagnosticText.text("Import an untrusted synthetic result", "导入未经信任的合成测试结果")
         panel.allowedFileTypes = ["json"]
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -313,17 +346,14 @@ final class SyntheticRoundtripController: NSObject {
               let proposal = state.proposal, proposal.manifestHash == hash else {
             show(RoundtripError.invalid("The displayed manifest is no longer current or is already being checked")); return
         }
-        let alert = NSAlert()
-        alert.messageText = "Run this separate local test?"
-        alert.informativeText = "The returned proposal is synthetic and its origin is unverified. This approval applies only to:\n\n" + proposal.actions.map(\.description).joined(separator: "\n\n") + "\n\nNo optimization is performed. Metric observations remain on this Mac. Socket proposals are rechecked after your approval and before actions start. Later remote cancellation cannot recall a locally started action; use this app's Cancel control."
-        alert.addButton(withTitle: "Approve local test"); alert.addButton(withTitle: "Cancel")
+        let alert = SyntheticStatusWindow.approval(for: proposal)
         guard alert.runModal() == .alertFirstButtonReturn,
               state.phase == .reviewing, state.proposal?.manifestHash == hash else { return }
         if state.runtimeInstanceID != nil {
             guard let endpoint = runtimeEndpoint, let request = state.request, endpoint.descriptor.instanceID == state.runtimeInstanceID else { show(RuntimeDiscoveryError.originalRuntimeGone); return }
             let token = exchangeGeneration, binding = socketBinding, cancellation = socketCancellation
             approvalCheckInFlight = true
-            present(title: "Checking approved synthetic proposal", text: "Your local approval is being checked against the temporary runtime. No action has started. You can still Cancel. A failed or changed response requires a new explicit approval.", buttons: [("Cancel request", #selector(cancel))])
+            present(title: DiagnosticText.text("Verifying before starting…", "正在进行执行前核验…"), text: DiagnosticText.text("No action has started. The runtime must confirm the exact proposal you approved. You can still cancel.", "尚未执行操作，正在向运行端确认你批准的同一份建议。此时仍可取消。"), buttons: [(DiagnosticText.text("Cancel request", "取消请求"), #selector(cancel))], busy: true)
             socketQueue.async { [weak self] in
                 let result = Result { () -> VerifiedSyntheticProposal in
                     let bytes = try endpoint.exchange(.result, request: request, cancellation: cancellation)
@@ -415,6 +445,7 @@ final class SyntheticRoundtripController: NSObject {
                     self.state.activeReceipt?.observations.append(values)
                     lastSignature = signature
                 }
+                if self.window?.isVisible == true { self.showRunning(activate: false) }
                 if elapsed >= duration {
                     self.observationTimer?.invalidate(); self.observationTimer = nil
                     self.record("observation_finished; compare timestamps and freshness, not synthetic fixture values")
@@ -430,6 +461,7 @@ final class SyntheticRoundtripController: NSObject {
         state.activeReceipt?.actionResults.append(message)
         do { try storage.save(state) }
         catch { interrupt(reason: "receipt_storage_failed") }
+        if state.phase == .executing, window?.isVisible == true { showRunning(activate: false) }
     }
     private func complete(_ outcome: String) {
         guard state.phase == .executing, let proposal = state.proposal else { return }
@@ -439,6 +471,7 @@ final class SyntheticRoundtripController: NSObject {
         do {
             let after = capture(metrics(for: proposal))
             try transition { try $0.finish(outcome: outcome, after: after, at: Date()) }
+            socketMessage = DiagnosticText.text("Local test finished. Review the local receipt for readings and freshness; no optimization is claimed.", "本地测试已结束，可查看回执中的读数与采样时间；不代表性能已优化。")
             showReceipt()
         } catch { storageFailure = "Receipt could not be saved. The local test will not resume."; show(error) }
     }
@@ -452,6 +485,10 @@ final class SyntheticRoundtripController: NSObject {
             try state.finish(outcome: "interrupted_\(reason)", after: [], at: Date())
             try storage.save(state)
         } catch { storageFailure = "Local check interrupted; receipt storage unavailable." }
+        // Refresh a visible test after sleep/pause without reopening a dismissed window.
+        if reason != "app_termination", window?.isVisible == true {
+            if storageFailure == nil { showReceipt() } else { reviewCurrent() }
+        }
     }
     func maintain(at now: Date) {
         let previousCount = state.receipts.count
@@ -471,23 +508,24 @@ final class SyntheticRoundtripController: NSObject {
         stopRetrieval()
         do {
             try transition { try $0.cancel(at: Date()) }
-            socketMessage = "Cancelled locally. No returned proposal can start an action."
+            lastConnectionError = nil
+            socketMessage = DiagnosticText.text("Cancelled locally. Returned proposals cannot start an action.", "本地已取消，返回的建议不能启动操作。")
             if shouldCancelRemote, let request, let endpoint {
-                socketMessage += " Runtime cancellation is being requested."
+                socketMessage += DiagnosticText.text(" Notifying the runtime…", " 正在通知运行端…")
                 cancelRemote(request, endpoint: endpoint, token: exchangeGeneration)
             }
             reviewCurrent()
         } catch { show(error) }
     }
-    private func showRunning() {
-        present(title: "SYNTHETIC suggestion · Approved local test running", text: "Only the reviewed native test functions are running. No model, remote upload or optimization runs.\n\nYou may cancel observation. An Activity Monitor launch already requested from macOS cannot be retracted; an opened app is not automatically closed. Sleep, pause or collection changes interrupt measurement; no automatic retry occurs.", buttons: [("Cancel local check", #selector(cancel))])
+    private func showRunning(activate: Bool = true) {
+        presentExperience(SyntheticExperience.running(state.proposal, receipt: state.activeReceipt), buttons: [(DiagnosticText.text("Stop observation", "停止观测"), #selector(cancel))], activate: activate)
     }
     @objc private func showReceipt() {
-        guard let receipt = state.receipts.last else { show(RoundtripError.invalid("No completed local receipt yet")); return }
+        guard let receipt = state.receipts.last else { return }
         do {
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let text = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "Unavailable"
-            present(title: "Local test receipt · No optimization claimed", text: "SYNTHETIC suggestion; unsigned/unverified origin. The following observations, if available, came from this Mac's existing collectors and remain local. This receipt does not prove a performance improvement.\n\n" + text, buttons: [("Save local receipt…", #selector(saveReceipt))])
+            let details = String(data: try encoder.encode(receipt), encoding: .utf8) ?? ""
+            presentExperience(SyntheticExperience.receipt(receipt), buttons: [(DiagnosticText.text("Back to overview", "返回概览"), #selector(reviewCurrent)), (DiagnosticText.text("Save local result…", "保存本地结果…"), #selector(saveReceipt))], details: details)
         } catch { show(error) }
     }
     @objc private func saveReceipt() {
@@ -500,26 +538,22 @@ final class SyntheticRoundtripController: NSObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try data.write(to: url, options: .atomic)
     }
-    private func present(title: String, text: String, buttons: [(String, Selector)]) {
-        window?.close()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 600), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.title = title
-        let root = NSStackView(); root.orientation = .vertical; root.spacing = 12
-        root.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
-        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 720, height: 500))
-        view.isEditable = false; view.isSelectable = true; view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        view.autoresizingMask = [.width]; view.textContainer?.widthTracksTextView = true; view.string = text
-        scroll.documentView = view; root.addArrangedSubview(scroll)
-        scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32).isActive = true
-        let row = NSStackView(); row.orientation = .horizontal
-        for (label, action) in buttons { row.addArrangedSubview(NSButton(title: label, target: self, action: action)) }
-        root.addArrangedSubview(row)
-        window.contentView = root; self.window = window; textView = view
-        window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    private func presentExperience(_ model: SyntheticExperience, buttons: [(String, Selector)], details: String = "", activate: Bool = true) {
+        present(title: model.title, text: model.introduction, buttons: buttons, details: details, busy: model.busy, localEvidence: model.localEvidence, sections: model.sections, progress: model.progress, activate: activate)
+    }
+    private func present(title: String, text: String, buttons: [(String, Selector)], details: String = "", busy: Bool = false, localEvidence: Bool = false,
+                         sections: [SyntheticSection] = [], progress: String = "", activate: Bool = true) {
+        statusWindow.show(title: title, introduction: text, sections: sections, progress: progress,
+                          buttons: buttons.map { SyntheticStatusWindow.Button(title: $0.0, action: $0.1, enabled: enabled($0.1), isApproval: $0.1 == #selector(authorize)) }, target: self,
+                          details: details, busy: busy, localEvidence: localEvidence, activate: activate)
     }
     private func show(_ error: Error) {
-        let alert = NSAlert(); alert.messageText = "Synthetic roundtrip"
-        alert.informativeText = error.localizedDescription; alert.runModal()
+        let alert = NSAlert(); alert.messageText = DiagnosticText.text("The test could not continue", "测试暂时无法继续")
+        alert.informativeText = DiagnosticText.error(error)
+        let detail = NSTextField(wrappingLabelWithString: error.localizedDescription)
+        detail.font = .systemFont(ofSize: 11); detail.textColor = .secondaryLabelColor
+        detail.preferredMaxLayoutWidth = 460; detail.setAccessibilityLabel(DiagnosticText.text("Technical detail", "技术详情"))
+        alert.accessoryView = detail
+        alert.addButton(withTitle: DiagnosticText.text("OK", "知道了")); alert.runModal()
     }
 }

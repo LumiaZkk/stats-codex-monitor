@@ -6,11 +6,11 @@ enum SyntheticSocketError: Error, LocalizedError {
     case unavailable, notListening, unsafeEndpoint, timeout, invalidResponse, cancelled
     var errorDescription: String? {
         switch self {
-        case .cancelled: return "Local request cancelled. A request already sent to the runtime may still need remote cancellation."
-        case .unavailable, .notListening: return "The temporary local runtime is unavailable. Start the updated foreground runtime, keep its Terminal open, and retry automatic discovery."
-        case .unsafeEndpoint: return "The runtime folder/socket must be owned by this user with permissions 0700/0600 and a same-user peer. No data was sent."
-        case .timeout: return "The local runtime did not finish within 5 seconds. Submission may have reached it. Retry reuses the same request; Cancel blocks local actions."
-        case .invalidResponse: return "The local runtime returned an invalid or oversized response. No local action is authorized."
+        case .cancelled: return DiagnosticText.text("Local request cancelled. A request already sent to the runtime may still need remote cancellation.", "本地请求已取消。已经发往运行端的请求，仍可能需要运行端确认取消。")
+        case .unavailable, .notListening: return DiagnosticText.text("The temporary local runtime is unavailable. Start the updated foreground runtime, keep its Terminal open, and retry automatic discovery.", "本机运行端暂不可用。请启动更新后的前台运行端，保持终端会话运行，然后重试。")
+        case .unsafeEndpoint: return DiagnosticText.text("The runtime folder/socket must be owned by this user with permissions 0700/0600 and a same-user peer. No data was sent.", "本机连接的归属、权限或进程身份未通过安全校验。请使用已批准的运行端重新建立连接；此次未发送数据。")
+        case .timeout: return DiagnosticText.text("The local runtime did not finish within 5 seconds. Submission may have reached it. Retry reuses the same request; Cancel blocks local actions.", "运行端未在 5 秒内回应。请求可能已送达；重试会复用本次请求，取消则会阻止本地操作。")
+        case .invalidResponse: return DiagnosticText.text("The local runtime returned an invalid or oversized response. No local action is authorized.", "运行端返回的数据无效或过大，未授权任何本地操作。")
         }
     }
 }

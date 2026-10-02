@@ -1,0 +1,279 @@
+// AppKit smoke/render test: no socket, model, process launch, or real collectors.
+import Cocoa
+
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let zh = CommandLine.arguments.contains("--chinese")
+let output = URL(fileURLWithPath: CommandLine.arguments.last!, isDirectory: true)
+try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: directory) }
+let lock = NSLock()
+var calls = 0
+let controller = SyntheticRoundtripController(directory: directory, capture: { _ in [] }, discover: { cancellation in
+    lock.lock(); calls += 1; lock.unlock()
+    Thread.sleep(forTimeInterval: 0.15) // A bounded simulated discovery latency, no I/O.
+    try cancellation.check()
+    return []
+})
+func run(_ selector: String) { controller.perform(NSSelectorFromString(selector)) }
+func pump(_ seconds: TimeInterval = 0.05) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+func waitUntil(_ condition: () -> Bool, _ name: String) {
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while !condition(), ProcessInfo.processInfo.systemUptime < deadline { pump(0.02) }
+    if !condition() { print("UI state on timeout: " + visibleText()); fflush(stdout) }
+    check(condition(), name)
+}
+func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+func window() -> NSWindow { app.windows.first { $0.isVisible && $0.contentView != nil }! }
+func visibleText() -> String { descendants(window().contentView!).compactMap { ($0 as? NSTextField)?.stringValue }.joined(separator: "\n") }
+func button(_ title: String) -> NSButton { descendants(window().contentView!).compactMap { $0 as? NSButton }.first { $0.title == title }! }
+func check(_ condition: @autoclosure () -> Bool, _ name: String) { if !condition() { fatalError("UI FAIL: " + name) } }
+func snapshot(_ name: String) throws {
+    pump()
+    let view = window().contentView!; view.layoutSubtreeIfNeeded()
+    for field in descendants(view).compactMap({ $0 as? NSTextField }) where !field.isHiddenOrHasHiddenAncestor {
+        let rect = field.convert(field.bounds, to: view)
+        if field.enclosingScrollView == nil {
+            check(rect.minY >= -1 && rect.maxY <= view.bounds.maxY + 1 && rect.minX >= -1 && rect.maxX <= view.bounds.maxX + 1, "Header fits the window: " + field.stringValue.prefix(30))
+        } else { check(field.bounds.width > 0 && field.bounds.height > 0, "Scrollable card has a real layout") }
+    }
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("UI render unavailable") }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    // NSView caching preserves transparency. Composite onto the app background in
+    // AppKit so artifact viewers do not accidentally render black text on black.
+    guard let canvas = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: bitmap.pixelsWide, pixelsHigh: bitmap.pixelsHigh, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: canvas) else { fatalError("Canvas unavailable") }
+    context.cgContext.setFillColor(CGColor(gray: 1, alpha: 1))
+    let pixelBounds = CGRect(x: 0, y: 0, width: canvas.pixelsWide, height: canvas.pixelsHigh)
+    context.cgContext.fill(pixelBounds)
+    context.cgContext.setBlendMode(.normal)
+    guard let rendered = bitmap.cgImage else { fatalError("Rendered image unavailable") }
+    context.cgContext.draw(rendered, in: pixelBounds)
+    context.flushGraphics()
+    check(canvas.colorAt(x: 0, y: 0)?.alphaComponent == 1, "Artifact has an opaque inspection background")
+    guard let png = canvas.representation(using: .png, properties: [:]) else { fatalError("PNG render unavailable") }
+    try png.write(to: output.appendingPathComponent((zh ? "zh-" : "en-") + name + ".png"))
+}
+run("reviewCurrent")
+check(visibleText().contains(zh ? "体验一次模拟诊断" : "Try a guided simulated diagnosis"), "App language applied")
+check(visibleText().contains("92%"), "Fixed synthetic fixture remains visible")
+let original = window()
+try snapshot("ready")
+run("sendSynthetic")
+check(window() === original, "Same window survives action")
+check(visibleText().contains(zh ? "正在查找" : "Finding"), "Click immediately shows discovery progress")
+check(!button(zh ? "发送测试" : "Send test").isEnabled, "Send visibly disabled while discovering")
+run("sendSynthetic")
+try snapshot("finding")
+waitUntil({ visibleText().contains(zh ? "尚未连接本机运行端" : "Local connection unavailable") }, "Missing runtime is an obvious state")
+lock.lock(); let firstCalls = calls; lock.unlock()
+check(firstCalls == 1, "Repeated click did not submit another discovery")
+check(button(zh ? "发送合成测试" : "Send synthetic test").isEnabled, "Retry possible after failure")
+try snapshot("disconnected")
+run("sendSynthetic")
+run("cancel")
+pump(0.3)
+check(visibleText().contains(zh ? "请求已取消" : "Request cancelled"), "Late discovery cannot replace cancellation")
+try snapshot("cancelled")
+run("createRequest")
+check(visibleText().contains(zh ? "请求已暂停" : "Request paused"), "Manual request remains visibly separate")
+check(button(zh ? "重试本次请求" : "Retry same request").isEnabled, "Pending request exposes bound retry")
+try snapshot("pending")
+run("cancel")
+window().close(); controller.stop()
+// Local receipt display uses synthetic test-only numbers as real-reading-format fixtures.
+var state = LocalRoundtripState()
+state.receipts = [LocalTestReceipt(receiptID: UUID().uuidString.lowercased(), clientRequestID: UUID().uuidString.lowercased(), proposalHash: String(repeating: "0", count: 64), manifestHash: String(repeating: "1", count: 64), startedAt: RoundtripJSON.timestamp(Date()), finishedAt: RoundtripJSON.timestamp(Date()), outcome: "completed_local_test", actionResults: ["fixture_only"], before: [LocalMetricReading(metric: .cpu, value: 0.21, observedAt: RoundtripJSON.timestamp(Date()), freshness: .fresh)], after: [LocalMetricReading(metric: .memory, value: 1, observedAt: nil, freshness: .unavailable)], observations: [])]
+try LocalRoundtripStorage(directory: directory).save(state)
+let receiptController = SyntheticRoundtripController(directory: directory, capture: { _ in [] })
+receiptController.perform(NSSelectorFromString("showReceipt"))
+check(visibleText().contains(zh ? "在本机实际发生" : "real local test outcomes"), "Receipt and synthetic fixture clearly distinguished")
+check(!visibleText().contains("92%"), "Real receipt does not show synthetic numbers as evidence")
+try snapshot("receipt")
+window().close(); receiptController.stop()
+// Render the exact presentation factories used by the live controller. Never execute them.
+func proposalFixture() throws -> VerifiedSyntheticProposal {
+    let now = Date(), expires = RoundtripJSON.timestamp(now.addingTimeInterval(1800))
+    let pending = try SyntheticClientRequest.create(at: now)
+    var wrapper = try RoundtripJSON.object(Data(contentsOf: URL(fileURLWithPath: "DiagnosticsTests/Fixtures/native-result-v1.json")))
+    let client = try RoundtripJSON.object(pending.json())
+    var request = try RoundtripJSON.object(wrapper["request_canonical_json"] as! String)
+    request["client_request"] = client; request["created_at"] = pending.createdAt; request["expires_at"] = expires
+    func canonical(_ object: [String: Any]) throws -> String { String(data: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]), encoding: .utf8)! }
+    let requestText = try canonical(request), requestHash = RoundtripJSON.digest(requestText)
+    var plan = try RoundtripJSON.object(wrapper["proposal_canonical_json"] as! String)
+    plan["request_hash"] = requestHash; plan["expires_at"] = expires
+    plan["summary"] = zh ? "固定样例中的 CPU 使用率为 92%，负载较高，但样例不能说明这台 Mac 的原因。建议由你批准打开活动监视器，并只读观察 60 秒，验证本地建议与操作结果的展示。不会执行优化。" : "The fixed sample shows high CPU usage at 92%; it does not identify a cause on this Mac. With your approval, open Activity Monitor and observe existing readings for 60 seconds to demonstrate the local review and result flow. No optimization is performed."
+    let planText = try canonical(plan)
+    wrapper["client_request"] = client; wrapper["request_canonical_json"] = requestText; wrapper["request_hash"] = requestHash
+    wrapper["proposal_canonical_json"] = planText; wrapper["proposal_hash"] = RoundtripJSON.digest(planText); wrapper["exported_at"] = pending.createdAt
+    return try VerifiedSyntheticProposal.importFile(JSONSerialization.data(withJSONObject: wrapper), pending: pending, at: now)
+}
+let proposal = try proposalFixture()
+let preview = SyntheticStatusWindow(), inertTarget = NSObject()
+func showModel(_ model: SyntheticExperience, approval: Bool = false) {
+    let label = approval ? DiagnosticText.text("Review local approval…", "查看并决定是否批准…") : model.busy ? DiagnosticText.text("Stop observation", "停止观测") : DiagnosticText.text("Back to overview", "返回概览")
+    var buttons = [SyntheticStatusWindow.Button(title: label, action: NSSelectorFromString("noop"), enabled: true, isApproval: approval)]
+    if approval { buttons.append(SyntheticStatusWindow.Button(title: DiagnosticText.text("Do not run", "不执行"), action: NSSelectorFromString("noop"), enabled: true)) }
+    if model.localEvidence { buttons.append(SyntheticStatusWindow.Button(title: DiagnosticText.text("Save local result…", "保存本地结果…"), action: NSSelectorFromString("noop"), enabled: true)) }
+    preview.show(title: model.title, introduction: model.introduction, sections: model.sections, progress: model.progress,
+                 buttons: buttons, target: inertTarget, busy: model.busy, localEvidence: model.localEvidence)
+}
+showModel(.proposal(proposal), approval: true)
+check(visibleText().contains(proposal.untrustedSummary), "Returned model summary is primary content")
+check(visibleText().contains(zh ? "为什么" : "Why:"), "Each allowed action has a rationale")
+check(visibleText().contains(zh ? "会发生什么" : "What happens:"), "Each allowed action explains impact")
+check(button(zh ? "查看并决定是否批准…" : "Review local approval…").keyEquivalent.isEmpty, "No default Enter approval")
+try snapshot("proposal")
+let cardScroll = descendants(window().contentView!).compactMap { $0 as? NSScrollView }.first!
+if let document = cardScroll.documentView { document.scroll(NSPoint(x: 0, y: document.bounds.height)); pump() }
+try snapshot("proposal-actions")
+preview.window?.close()
+let approval = SyntheticStatusWindow.approval(for: proposal)
+approval.layout(); approval.window.orderFront(nil)
+check(visibleText().contains(zh ? "不会查明或修复" : "will not find or fix"), "Approval explains the outcome limit")
+try snapshot("approval")
+approval.window.close()
+let started = Date().addingTimeInterval(-30), finish = started.addingTimeInterval(60)
+let before = LocalMetricReading(metric: .cpu, value: 0.31, observedAt: RoundtripJSON.timestamp(started), freshness: .fresh)
+let after = LocalMetricReading(metric: .cpu, value: 0.24, observedAt: RoundtripJSON.timestamp(finish), freshness: .fresh)
+var fullReceipt = LocalTestReceipt(receiptID: "ui-fixture", clientRequestID: proposal.clientRequestID, proposalHash: proposal.proposalHash, manifestHash: proposal.manifestHash, startedAt: RoundtripJSON.timestamp(started), outcome: "started", actionResults: ["activity_monitor_opened; no optimization performed", "observation_started: 60s; existing collectors only"], before: [before], after: [], observations: [])
+showModel(.running(proposal, receipt: fullReceipt))
+check(visibleText().contains(zh ? "30 秒" : "30 seconds"), "Running view shows elapsed observation time")
+try snapshot("running")
+fullReceipt.finishedAt = RoundtripJSON.timestamp(finish); fullReceipt.outcome = "completed_local_test"
+fullReceipt.actionResults.append("observation_finished; compare timestamps and freshness, not synthetic fixture values")
+fullReceipt.after = [after]; fullReceipt.observations = [[after]]
+showModel(.receipt(fullReceipt))
+check(visibleText().contains(zh ? "已打开" : "Opened:"), "Completion displays per-action outcome")
+try snapshot("completed")
+if let scroll = descendants(window().contentView!).compactMap({ $0 as? NSScrollView }).first, let document = scroll.documentView { document.scroll(NSPoint(x: 0, y: document.bounds.height)); pump() }
+try snapshot("completed-next-step")
+fullReceipt.outcome = "interrupted_sleep"; fullReceipt.actionResults.removeLast(); fullReceipt.after = []
+showModel(.receipt(fullReceipt))
+check(visibleText().contains(zh ? "观测在完成前停止" : "before completion"), "Interrupted view identifies partial outcome")
+try snapshot("interrupted")
+preview.window?.close()
+print("PASS: AppKit \(zh ? "zh-Hans" : "en") status, click, cancel, proposal, approval, running, completed and interrupted render checks")
+
+// Real flow is rendered with unmistakable fake fixtures. These hooks are absent
+// from the shipped app, and no socket or termination API is invoked here.
+let realDirectory = directory.appendingPathComponent("real", isDirectory: true)
+// The production consent and retry state machine is exercised with inert socket
+// and process-reader boundaries. No runtime, process list, or real upload is used.
+var collectionReads = 0, collectionHostReads = 0
+let inbox = RealOptimizationController(directory: directory.appendingPathComponent("inbox"), capture: { collectionHostReads += 1; return .empty }, recent: { [] })
+inbox.testProcessTable = {
+    collectionReads += 1
+    return RealProcessTable(counters: [:], uids: [:], starts: [:], reportedCount: 0, unreadable: 0, truncated: false)
+}
+let intentNow = Date()
+let intentObject: [String: Any] = ["schema_version": 1, "kind": "stats_global_collection_intent", "intent_id": UUID().uuidString.lowercased(),
+    "created_at": RoundtripJSON.timestamp(intentNow.addingTimeInterval(-1)), "expires_at": RoundtripJSON.timestamp(intentNow.addingTimeInterval(599)), "consent_scope": "global_diagnostics_v1"]
+let intentReply = Data(try RealJSON.encode(["result": ["schema_version": 1, "kind": "stats_global_collection_poll", "intent": intentObject, "intent_hash": RoundtripJSON.digest(RealJSON.encode(intentObject))]]).utf8)
+let inboxIntent = try RealCollectionIntent.parsePoll(intentReply, at: intentNow)!
+inbox.testOfferCollection(inboxIntent)
+check(collectionReads == 0 && collectionHostReads == 0, "Receiving intent cannot capture process or host data")
+check(visibleText().contains(zh ? "允许这一次全局诊断" : "Allow one global diagnosis"), "Global collection has a distinct native consent screen")
+check(button(zh ? "采集并预览" : "Collect and preview").keyEquivalent.isEmpty, "Collection consent has no default Enter shortcut")
+try snapshot("collection-consent")
+let confirmationGate = DispatchSemaphore(value: 0), confirmationLock = NSLock()
+var confirmationStarted = false
+inbox.testSocketExchange = { _ in
+    confirmationLock.lock(); confirmationStarted = true; confirmationLock.unlock()
+    _ = confirmationGate.wait(timeout: .now() + 2)
+    return intentReply
+}
+inbox.perform(NSSelectorFromString("confirmCollection"))
+waitUntil({ confirmationLock.lock(); defer { confirmationLock.unlock() }; return confirmationStarted }, "Consent rechecks exact active intent before any capture")
+window().close()
+confirmationGate.signal(); pump(0.2)
+check(!inbox.testPendingCollection, "Closing consent resolves local denial immediately")
+check(collectionReads == 0 && collectionHostReads == 0, "Late confirmation after close cannot enter either collector")
+inbox.testOfferCollection(inboxIntent)
+inbox.testExpireCollection(at: intentNow.addingTimeInterval(601))
+check(!inbox.testPendingCollection && collectionReads == 0 && collectionHostReads == 0, "Expired unsubmitted consent clears without collection and cannot block the next intent")
+inbox.testOfferCollection(inboxIntent)
+inbox.testSeedCollectionPreview(RealGlobalSample(candidates: [], consumers: [], coverage: ["reported_process_count": 0]))
+let uploadLock = NSLock()
+var uploads: [Data] = []
+inbox.testSocketExchange = { data in
+    uploadLock.lock(); uploads.append(data); let count = uploads.count; uploadLock.unlock()
+    if count == 1 { throw SyntheticSocketError.timeout }
+    let command = try RoundtripJSON.object(data), envelope = try RealJSON.object(command, "client_request")
+    let body = try RoundtripJSON.object(RoundtripJSON.string(envelope, "client_request_json"))
+    return Data(try RealJSON.encode(["result": ["schema_version": 1, "kind": "stats_real_socket_status",
+        "client_request_id": body["client_request_id"]!, "client_request_hash": envelope["client_request_hash"]!,
+        "request_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "request_hash": String(repeating: "b", count: 64),
+        "status": "requested", "bundle": NSNull(), "receipt": NSNull()]]).utf8)
+}
+inbox.perform(NSSelectorFromString("send"))
+waitUntil({ descendants(window().contentView!).compactMap { $0 as? NSButton }.contains { $0.title == (zh ? "重试同一次请求" : "Retry same request") } }, "Lost upload response exposes immutable retry")
+let pendingUpload = inbox.testPendingRequest
+check(inbox.testRetryOperation(at: intentNow.addingTimeInterval(601)) == "result_real", "Expired uncertain upload can only query its existing immutable result")
+inbox.perform(NSSelectorFromString("collect"))
+check(inbox.testPendingRequest == pendingUpload && pendingUpload != nil, "Refresh cannot replace an uncertain upload")
+inbox.perform(NSSelectorFromString("retrySubmission"))
+waitUntil({ uploadLock.lock(); defer { uploadLock.unlock() }; return uploads.count == 2 }, "Retry reaches the same upload boundary")
+uploadLock.lock(); let sameUpload = uploads.count == 2 && uploads[0] == uploads[1]; uploadLock.unlock()
+check(sameUpload, "Response lost then retry sends byte-identical original consent and snapshot")
+check(collectionReads == 0 && collectionHostReads == 0, "Retry never recaptures or alters the approved preview")
+inbox.perform(NSSelectorFromString("cancel")); window().close(); inbox.stop()
+print("PASS: Collection consent, close-during-confirmation cancellation, and immutable lost-response retry")
+let real = RealOptimizationController(directory: realDirectory, capture: { .empty }, recent: { [] })
+real.open()
+check(visibleText().contains(zh ? "分析这台 Mac" : "Diagnose this Mac"), "Real flow is primary and not synthetic")
+check(!visibleText().contains("92%"), "Real flow has no fixed CPU fixture banner")
+try snapshot("real-start")
+let fixtureRoot = URL(fileURLWithPath: "RealOptimizationTests/fixtures")
+let realEnvelope = try RoundtripJSON.object(Data(contentsOf: fixtureRoot.appendingPathComponent("real-request-v1.json")))
+let realBodyJSON = realEnvelope["client_request_json"] as! String
+let realBody = try RoundtripJSON.object(realBodyJSON)
+let targetRows = realBody["candidates"] as! [[String: Any]]
+let realRequest = RealDiagnosticRequest(id: realBody["client_request_id"] as! String, createdAt: realBody["created_at"] as! String, expiresAt: realBody["expires_at"] as! String, json: realBodyJSON, hash: realEnvelope["client_request_hash"] as! String, candidateIDs: targetRows.map { $0["candidate_id"] as! String })
+let realClock = try RoundtripJSON.date("2026-10-01T10:00:02.000Z")
+let realPlan = try RealPlan.parse(RoundtripJSON.object(Data(contentsOf: fixtureRoot.appendingPathComponent("real-result-v1.json"))), pending: realRequest, at: realClock)
+let fakeIdentity = RealAppIdentity(pid: 900001, uid: 501, startedSeconds: 42, startedMicroseconds: 1, bundleID: "com.example.fixture", bundlePath: "/Applications/Fixture.app", executablePath: "/Applications/Fixture.app/Contents/MacOS/Fixture", codeHash: "fake", teamID: "FAKE", displayName: "UI Fixture Editor")
+let fakeUsage = RealAppUsage(cpuBasisPoints: 6500, residentBytes: 805306368, intervalMS: 2000, observedAt: "2026-10-01T09:59:59.000Z")
+let fakeTarget = RealCandidate(id: realRequest.candidateIDs[0], identity: fakeIdentity, usage: fakeUsage)
+let fakeSample = RealGlobalSample(candidates: [fakeTarget], consumers: realBody["consumers"] as! [[String: Any]], coverage: realBody["coverage"] as! [String: Any])
+let fakeHost = try RealHostSnapshot.parse(realBody["snapshot"] as! [String: Any], at: try RoundtripJSON.date(realRequest.createdAt))
+real.testSeed(request: realRequest, plan: realPlan, sample: fakeSample, host: fakeHost)
+real.testShowPreview()
+check(visibleText().contains(zh ? "尚未" : "before sending") || visibleText().contains(zh ? "发送前" : "before sending"), "Real privacy preview is explicit")
+try snapshot("real-privacy-preview")
+real.testSeed(request: realRequest, plan: realPlan, sample: fakeSample, host: fakeHost)
+check(visibleText().contains(realPlan.summary), "Real model conclusion remains verbatim plain text")
+check(visibleText().contains("UI Fixture Editor"), "Exact target is named before approval")
+check(button(zh ? "核对并批准…" : "Review and approve…").keyEquivalent.isEmpty, "Real action does not get a default Enter shortcut")
+try snapshot("real-proposal")
+if let scroll = descendants(window().contentView!).compactMap({ $0 as? NSScrollView }).first, let document = scroll.documentView { document.scroll(NSPoint(x: 0, y: document.bounds.height)); pump() }
+try snapshot("real-action-limits")
+let realApproval = real.testApprovalAlert()
+window().orderOut(nil); realApproval.layout(); realApproval.window.orderFront(nil)
+check(visibleText().contains("UI Fixture Editor") && visibleText().contains("com.example.fixture"), "Real approval names target and local verified identity")
+try snapshot("real-approval")
+realApproval.window.close()
+real.testShowRunning()
+check(visibleText().contains("30/60"), "Real execution stage has explicit observation progress")
+try snapshot("real-running")
+try real.testConsumeAndReopen(cancelled: false)
+check(visibleText().contains(zh ? "拒绝" : "declined"), "Declined plan reopens as result and cannot approve again")
+try snapshot("real-declined")
+real.testSeed(request: realRequest, plan: realPlan, sample: fakeSample, host: fakeHost)
+try real.testConsumeAndReopen(cancelled: true)
+check(visibleText().contains(zh ? "停止" : "stopped"), "Cancelled plan is consumed on reopen")
+var realReceipt = RealLocalReceipt(id: "ui-receipt", requestID: realRequest.id, clientRequestHash: realRequest.hash, planID: realPlan.id, planHash: realPlan.hash, manifest: "fixture", targetFingerprint: "fixture", appName: "UI Fixture Editor", startedAt: "2026-10-01T10:00:30.000Z", completedAt: "2026-10-01T10:01:35.000Z", approvalAt: "2026-10-01T10:00:30.000Z", outcome: "quit_confirmed", quitRequested: true, exitConfirmed: true, before: fakeHost, beforeUsage: fakeUsage, after: fakeHost)
+realReceipt.dispatchAttempted = true; realReceipt.dispatchOutcomeKnown = true
+real.testShowReceipt(realReceipt)
+check(visibleText().contains(zh ? "已退出" : "exited"), "Real result reports actual exit evidence")
+check(visibleText().contains(zh ? "不代表整体性能已改善" : "not a general performance improvement"), "Exit is distinct from performance improvement")
+check(!visibleText().contains("30/60"), "Completed receipt does not retain execution progress")
+try snapshot("real-completed")
+realReceipt.quitRequested = false; realReceipt.exitConfirmed = false; realReceipt.dispatchOutcomeKnown = false; realReceipt.outcome = "interrupted_by_restart"
+real.testShowReceipt(realReceipt)
+check(visibleText().contains(zh ? "实际结果未知" : "outcome is unknown"), "Interrupted dispatch remains explicitly unknown")
+check(!visibleText().contains("30/60"), "Interrupted receipt does not contradict unknown dispatch with running progress")
+try snapshot("real-interrupted")
+print("PASS: Real AppKit \(zh ? "zh-Hans" : "en") proposal, consumed-plan replay prevention, completion and interrupted-dispatch renders")

@@ -172,20 +172,103 @@ internal class CapacityReader: Reader<Disks> {
 
 internal class ActivityReader: Reader<Disks> {
     internal var list: Disks = Disks()
+    private let samplingQueue = DispatchQueue(label: "eu.exelban.Disk.activityReader")
+    private var rates: [String: DiskActivityRate] = [:]
+    private var samplingEnabled = false
+    private var systemSleeping = false
     
     override func setup() {
         self.setInterval(1)
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        center.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        self.list.forEach { if $0.parent != 0 { IOObjectRelease($0.parent) } }
+    }
+
+    public override func start() {
+        self.samplingQueue.sync {
+            if !self.samplingEnabled {
+                self.resetActivity()
+                self.samplingEnabled = true
+            }
+        }
+        super.start()
+    }
+
+    public override func pause() {
+        super.pause()
+        self.samplingQueue.sync {
+            self.samplingEnabled = false
+            self.resetActivity()
+        }
+    }
+
+    public override func stop() {
+        super.stop()
+        self.samplingQueue.sync {
+            self.samplingEnabled = false
+            self.resetActivity()
+        }
+    }
+
+    @objc private func willSleep(_ notification: Notification) {
+        self.samplingQueue.sync {
+            self.systemSleeping = true
+            self.resetActivity()
+        }
+    }
+
+    @objc private func didWake(_ notification: Notification) {
+        self.samplingQueue.sync {
+            self.systemSleeping = false
+            self.resetActivity()
+            if self.samplingEnabled { self.publishSnapshot() }
+        }
+    }
+
+    // Called only on samplingQueue, including lifecycle resets, so an in-flight
+    // read cannot leave a pre-pause/pre-sleep baseline behind.
+    private func resetActivity() {
+        self.rates.removeAll()
+        for idx in self.list.array.indices {
+            self.list.updateRead(idx, newValue: 0)
+            self.list.updateWrite(idx, newValue: 0)
+            self.list.updateReadWrite(idx, read: 0, write: 0)
+            self.list.updateActivityObservation(idx, observedAt: nil)
+        }
+    }
+
+    private func publishSnapshot() {
+        // UI delivery is asynchronous. Do not hand it the mutable working list.
+        let snapshot = Disks()
+        snapshot.array = self.list.array
+        self.callback(snapshot)
     }
     
     public override func read() {
+        self.samplingQueue.sync {
+            guard self.samplingEnabled, !self.systemSleeping else { return }
+            self.readActivity()
+        }
+    }
+
+    private func readActivity() {
         let keys: [URLResourceKey] = [.volumeNameKey]
         let removableState = Store.shared.bool(key: "Disk_removable", defaultValue: false)
         guard let paths = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys) else {
+            self.resetActivity()
+            self.publishSnapshot()
             return
         }
         
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
             error("cannot create a DASessionCreate()", log: self.log)
+            self.resetActivity()
+            self.publishSnapshot()
             return
         }
         
@@ -200,12 +283,14 @@ internal class ActivityReader: Reader<Disks> {
                         if let d = self.list.first(where: { $0.BSDName == BSDName}), let idx = self.list.index(where: { $0.BSDName == BSDName}) {
                             if d.removable && !removableState {
                                 if d.parent != 0 { IOObjectRelease(d.parent) }
+                                self.rates.removeValue(forKey: BSDName)
                                 self.list.remove(at: idx)
                                 continue
                             }
                             
                             if driveIdentityChanged(d, url, disk) {
                                 if d.parent != 0 { IOObjectRelease(d.parent) }
+                                self.rates.removeValue(forKey: BSDName)
                                 self.list.remove(at: idx)
                             } else {
                                 self.driveStats(idx, d)
@@ -216,6 +301,9 @@ internal class ActivityReader: Reader<Disks> {
                         if let d = driveDetails(disk, removableState: removableState) {
                             self.list.append(d)
                             self.list.sort()
+                            if let idx = self.list.index(where: { $0.BSDName == BSDName }) {
+                                self.driveStats(idx, d)
+                            }
                         }
                     }
                 }
@@ -226,35 +314,47 @@ internal class ActivityReader: Reader<Disks> {
             if let idx = self.list.index(where: { $0.BSDName == BSDName }) {
                 let parent = self.list.array[idx].parent
                 if parent != 0 { IOObjectRelease(parent) }
+                self.rates.removeValue(forKey: BSDName)
                 self.list.remove(at: idx)
             }
         }
         
-        self.callback(self.list)
+        self.publishSnapshot()
     }
     
     private func driveStats(_ idx: Int, _ d: drive) {
+        // A failed read must not keep displaying an old rate or bridge the next
+        // sample across a period in which the counters were unavailable.
+        self.list.updateRead(idx, newValue: 0)
+        self.list.updateWrite(idx, newValue: 0)
+        self.list.updateActivityObservation(idx, observedAt: nil)
+        var hasCounters = false
+        defer {
+            if !hasCounters {
+                self.rates.removeValue(forKey: d.BSDName)
+                self.list.updateReadWrite(idx, read: 0, write: 0)
+            }
+        }
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOBSDNameMatching(kIOMainPortDefault, 0, d.BSDName))
         if service == 0 { return }
         IOObjectRelease(service)
         
         guard let props = getIOProperties(d.parent) else { return }
         
-        if let statistics = props.object(forKey: "Statistics") as? NSDictionary {
-            let readBytes = statistics.object(forKey: "Bytes (Read)") as? Int64 ?? 0
-            let writeBytes = statistics.object(forKey: "Bytes (Write)") as? Int64 ?? 0
-            
-            if d.activity.readBytes != 0 {
-                self.list.updateRead(idx, newValue: readBytes - d.activity.readBytes)
-            }
-            if d.activity.writeBytes != 0 {
-                self.list.updateWrite(idx, newValue: writeBytes - d.activity.writeBytes)
-            }
-            
-            self.list.updateReadWrite(idx, read: readBytes, write: writeBytes)
-        }
-        
-        return
+        guard let statistics = props.object(forKey: "Statistics") as? NSDictionary,
+              let readBytes = statistics.object(forKey: "Bytes (Read)") as? Int64,
+              let writeBytes = statistics.object(forKey: "Bytes (Write)") as? Int64,
+              readBytes >= 0, writeBytes >= 0 else { return }
+
+        let observedAt = Date()
+        let rate = self.rates[d.BSDName, default: DiskActivityRate()].update(
+            readBytes: readBytes, writeBytes: writeBytes, at: ProcessInfo.processInfo.systemUptime
+        )
+        self.list.updateRead(idx, newValue: rate?.read ?? 0)
+        self.list.updateWrite(idx, newValue: rate?.write ?? 0)
+        self.list.updateReadWrite(idx, read: readBytes, write: writeBytes)
+        self.list.updateActivityObservation(idx, observedAt: rate == nil ? nil : observedAt)
+        hasCounters = true
     }
 }
 
@@ -279,6 +379,7 @@ private func driveDetails(_ disk: DADisk, removableState: Bool) -> drive? {
     
     if let diskDescription = DADiskCopyDescription(disk) {
         if let dict = diskDescription as? [String: AnyObject] {
+            d.internalDevice = dict[kDADiskDescriptionDeviceInternalKey as String] as? Bool
             if let removable = dict[kDADiskDescriptionMediaRemovableKey as String] as? Bool {
                 if removable {
                     if !removableState {
