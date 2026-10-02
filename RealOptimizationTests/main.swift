@@ -70,9 +70,38 @@ check(!RealAppPolicy.allowed(bundleID: "com.example.app", name: "App", bundlePat
 check(RealAppPolicy.allowed(bundleID: "com.example.app", name: "App", bundlePath: "/Applications/App.app", home: "/Users/test"), "Ordinary GUI path allowed for further signature validation")
 let c1 = RealAppCounter(user: 1_000_000_000, system: 0, resident: 1, uptime: 10, date: now)
 let c2 = RealAppCounter(user: 2_000_000_000, system: 0, resident: 2048, uptime: 12, date: now.addingTimeInterval(2))
-let measured = try RealAppCounter.usage(c1, c2, maximumCores: 8)
+let measured = try RealAppCounter.usage(c1, c2, maximumCores: 8, timebase: RealCPUTimebase(numerator: 1, denominator: 1))
 check(measured.cpuBasisPoints == 5000 && measured.residentBytes == 2048, "CPU delta is50% of one core over2s")
 rejects("counter rollback") { _ = try RealAppCounter.usage(c2, c1, maximumCores: 8) }
+let machBefore = RealAppCounter(user: 1_000, system: 2_000, resident: 1, uptime: 10, date: now)
+let machAfter = RealAppCounter(user: 18_001_000, system: 6_002_000, resident: 2048, uptime: 12, date: now.addingTimeInterval(2))
+let armMeasured = try RealAppCounter.usage(machBefore, machAfter, maximumCores: 8, timebase: RealCPUTimebase(numerator: 125, denominator: 3))
+check(armMeasured.cpuBasisPoints == 5000 && armMeasured == measured, "125:3 Mach ticks and1:1 nanosecond ticks represent the same50% CPU workload")
+check(armMeasured.isHigh, "True50% single-core CPU remains above unchanged25% eligibility gate")
+let incorrectlyAssumedNS = try RealAppCounter.usage(machBefore, machAfter, maximumCores: 8, timebase: RealCPUTimebase(numerator: 1, denominator: 1))
+check(incorrectlyAssumedNS.cpuBasisPoints == 120 && !incorrectlyAssumedNS.isHigh, "Regression exposes the former41.6667-fold undercount and missing eligible target")
+rejects("missing Mach timebase cannot claim a CPU value") { _ = try RealAppCounter.usage(c1, c2, maximumCores: 8, timebase: nil) }
+rejects("zero timebase numerator") { _ = try RealAppCounter.usage(c1, c2, maximumCores: 8, timebase: RealCPUTimebase(numerator: 0, denominator: 1)) }
+rejects("zero timebase denominator") { _ = try RealAppCounter.usage(c1, c2, maximumCores: 8, timebase: RealCPUTimebase(numerator: 1, denominator: 0)) }
+let multicoreAfter = RealAppCounter(user: machBefore.user + 120_000_000, system: machBefore.system, resident: 2048, uptime: 12, date: now.addingTimeInterval(2))
+let multicoreUsage = try RealAppCounter.usage(machBefore, multicoreAfter, maximumCores: 8, timebase: RealCPUTimebase(numerator: 125, denominator: 3))
+check(multicoreUsage.cpuBasisPoints == 25000, "Mach conversion preserves real multi-core CPU above100%")
+rejects("converted CPU beyond physical-core bound") { _ = try RealAppCounter.usage(machBefore, multicoreAfter, maximumCores: 2, timebase: RealCPUTimebase(numerator: 125, denominator: 3)) }
+let highBefore = RealAppCounter(user: UInt64.max - 24_000_000, system: UInt64.max - 1, resident: 1, uptime: 10, date: now)
+let highAfter = RealAppCounter(user: UInt64.max, system: UInt64.max - 1, resident: 2048, uptime: 12, date: now.addingTimeInterval(2))
+let highUsage = try RealAppCounter.usage(highBefore, highAfter, maximumCores: 8, timebase: RealCPUTimebase(numerator: 125, denominator: 3))
+check(highUsage.cpuBasisPoints == 5000, "Subtract raw UInt64 totals before conversion without overflow")
+let rolledUser = RealAppCounter(user: machBefore.user - 1, system: machBefore.system, resident: 1, uptime: 12, date: now.addingTimeInterval(2))
+let rolledSystem = RealAppCounter(user: machBefore.user, system: machBefore.system - 1, resident: 1, uptime: 12, date: now.addingTimeInterval(2))
+rejects("user counter rollback with valid forward sampling time") { _ = try RealAppCounter.usage(machBefore, rolledUser, maximumCores: 8) }
+rejects("system counter rollback with valid forward sampling time") { _ = try RealAppCounter.usage(machBefore, rolledSystem, maximumCores: 8) }
+let extreme = RealAppCounter(user: UInt64.max, system: UInt64.max, resident: 1, uptime: 12, date: now.addingTimeInterval(2))
+rejects("extreme deltas fail physical-core bound without overflow") { _ = try RealAppCounter.usage(machBefore, extreme, maximumCores: 8, timebase: RealCPUTimebase(numerator: UInt32.max, denominator: 1)) }
+for (ticks, eligible) in [(UInt64(11_995_200), false), (UInt64(12_000_000), true)] {
+    let end = RealAppCounter(user: machBefore.user + ticks, system: machBefore.system, resident: 1, uptime: 12, date: now.addingTimeInterval(2))
+    let usage = try RealAppCounter.usage(machBefore, end, maximumCores: 8, timebase: RealCPUTimebase(numerator: 125, denominator: 3))
+    check(usage.isHigh == eligible, "Corrected units preserve exact25% eligibility boundary")
+}
 let before = try RealHostSnapshot.parse(body["snapshot"] as! [String: Any], at: try RoundtripJSON.date(request.createdAt))
 check(before.cpuBasisPoints != nil, "Timestamped host cache parses")
 let socketBytes = try Data(contentsOf: root.appendingPathComponent("real-socket-status-v1.json"))

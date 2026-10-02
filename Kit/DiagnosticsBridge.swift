@@ -3,6 +3,7 @@ import Foundation
 
 public enum DiagnosticsBridge {
     public static let notification = Notification.Name("ai.personal.StatsDiagnostics.sample")
+    public static let openGlobalDiagnosis = Notification.Name("ai.personal.StatsDiagnostics.openGlobalDiagnosis")
     public static var enabled: Bool {
         Bundle.main.object(forInfoDictionaryKey: "StatsDiagnosticsFork") as? Bool == true
     }

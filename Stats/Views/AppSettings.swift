@@ -105,7 +105,7 @@ class ApplicationSettings: NSStackView {
             state: LaunchAtLogin.isEnabled
         )
         
-        scrollView.stackView.addArrangedSubview(PreferencesSection([
+        var generalRows = [
             PreferencesRow(localizedString("Check for updates"), component: self.updateSelector!),
             PreferencesRow(localizedString("Temperature"), component: selectView(
                 action: #selector(self.toggleTemperatureUnits),
@@ -122,7 +122,14 @@ class ApplicationSettings: NSStackView {
                 state: self.keepMenuBarPosition
             )),
             PreferencesRow("Diagnostics privacy", component: textView("Local only · explicit snapshot sharing"))
-        ]))
+        ]
+        if DiagnosticsBridge.enabled {
+            let diagnoseButton = buttonView(#selector(openGlobalDiagnosis), text: DiagnosticText.text("Global diagnostics and optimization…", "全局诊断与优化…"))
+            diagnoseButton.bezelStyle = .rounded
+            diagnoseButton.setAccessibilityIdentifier("global-diagnostics-open")
+            generalRows.append(PreferencesRow(component: diagnoseButton))
+        }
+        scrollView.stackView.addArrangedSubview(PreferencesSection(generalRows))
         
         self.combinedModulesView = PreferencesSection([
             PreferencesRow(localizedString("Combined modules"), component: switchView(
@@ -343,6 +350,11 @@ class ApplicationSettings: NSStackView {
         })
     }
     
+    @objc private func openGlobalDiagnosis() {
+        guard DiagnosticsBridge.enabled else { return }
+        NotificationCenter.default.post(name: DiagnosticsBridge.openGlobalDiagnosis, object: nil)
+    }
+
     @objc private func toggleUpdateInterval(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String else { return }
         Store.shared.set(key: "update-interval", value: key)

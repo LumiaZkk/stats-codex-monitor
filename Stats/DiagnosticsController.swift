@@ -44,6 +44,9 @@ final class DiagnosticsController: NSObject, NSMenuDelegate {
         observers.append(NotificationCenter.default.addObserver(forName: DiagnosticsBridge.notification, object: nil, queue: .main) { [weak self] note in
             self?.receive(note)
         })
+        observers.append(NotificationCenter.default.addObserver(forName: DiagnosticsBridge.openGlobalDiagnosis, object: nil, queue: .main) { [weak self] _ in
+            self?.realOptimization?.open()
+        })
         for name in [Notification.Name.pause, Notification.Name.toggleModule] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 self?.resetContinuity()

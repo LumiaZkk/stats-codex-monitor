@@ -32,17 +32,33 @@ struct RealAppUsage: Codable, Equatable {
     }
 }
 
+struct RealCPUTimebase {
+    let numerator: UInt32
+    let denominator: UInt32
+    static let current: Self? = {
+        var value = mach_timebase_info_data_t()
+        guard mach_timebase_info(&value) == KERN_SUCCESS, value.numer > 0, value.denom > 0 else { return nil }
+        return Self(numerator: value.numer, denominator: value.denom)
+    }()
+}
+
 struct RealAppCounter {
+    // proc_taskinfo CPU totals are Mach timebase ticks, not nanoseconds. Both
+    // the global process table and exact-target recheck retain these raw units.
     let user: UInt64
     let system: UInt64
     let resident: UInt64
     let uptime: TimeInterval
     let date: Date
-    static func usage(_ before: Self, _ after: Self, maximumCores: Int) throws -> RealAppUsage {
+    static func usage(_ before: Self, _ after: Self, maximumCores: Int, timebase: RealCPUTimebase? = RealCPUTimebase.current) throws -> RealAppUsage {
         let elapsed = after.uptime - before.uptime
         guard (1.5...5).contains(elapsed), abs(after.date.timeIntervalSince(before.date) - elapsed) <= 0.5,
-              after.user >= before.user, after.system >= before.system else { throw RealOptimizationError.changed }
-        let nanos = Double(after.user - before.user) + Double(after.system - before.system)
+              after.user >= before.user, after.system >= before.system,
+              let timebase, timebase.numerator > 0, timebase.denominator > 0 else { throw RealOptimizationError.changed }
+        // Apple XNU fill_taskprocinfo copies recount_times_mach totals directly.
+        // Convert their deltas once; elapsed uptime is already expressed in seconds.
+        let ticks = Double(after.user - before.user) + Double(after.system - before.system)
+        let nanos = ticks * Double(timebase.numerator) / Double(timebase.denominator)
         let bp = nanos / (elapsed * 1_000_000_000) * 10_000
         guard bp.isFinite, bp >= 0, bp <= Double(maximumCores) * 10_000 * 1.05 else { throw RealOptimizationError.changed }
         return RealAppUsage(cpuBasisPoints: Int(bp.rounded()), residentBytes: after.resident,
